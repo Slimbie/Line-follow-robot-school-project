@@ -30,7 +30,7 @@ const int sensorPinnen[SENSOR_COUNT] = {32, 33, 34, 35, 36, 39, 25, 26};
 // --- Ultrasoon ---
 #define TRIG_PIN 5
 #define ECHO_PIN 18
-#define DISTANCE_THRESHOLD 17.0 // cm
+#define DISTANCE_THRESHOLD 5.0 // cm
 
 // --- Motoren (L298N / OT2065) ---
 // Links

@@ -31,7 +31,6 @@ int obstacleDetectCount = 0;
 int obstacleClearCount = 0;
 const int OBSTACLE_CONFIRM_COUNT = 3;
 const int OBSTACLE_CLEAR_COUNT = 3;
-const float OBSTACLE_ENABLE_DISTANCE = 5.0; // cm: laat de eerste paar cm stabiliseren voor detectie
 const float OBSTACLE_PASS_DISTANCE = 27.0; // cm rechtdoor rijden voorbij het object
 const int OBSTACLE_RIGHT_SPEED_HIGH = 95;
 const int OBSTACLE_RIGHT_SPEED_LOW = 25;
@@ -56,12 +55,6 @@ bool obstacleInFront() {
 }
 
 bool obstacleConfirmed() {
-  if (currentSensors.distanceDriven < OBSTACLE_ENABLE_DISTANCE) {
-    obstacleDetectCount = 0;
-    obstacleClearCount = 0;
-    return false;
-  }
-
   if (obstacleInFront()) {
     obstacleDetectCount++;
     obstacleClearCount = 0;
@@ -124,7 +117,7 @@ void handleObstacleAvoidance() {
         setMotorSpeed(leftPWM, rightPWM);
         Serial.println("Lijn gedetecteerd, stuur terug naar de lijn.");
 
-        if (abs(lineError) < 10.0 && passedDistance >= OBSTACLE_PASS_DISTANCE) {
+        if (abs(lineError) < 10.0 && passedDistance >= 30.0) {
           Serial.println("Lijn teruggevonden, terug naar vorige modus.");
           currentState = previousState;
           obstaclePhase = OB_NONE;
@@ -242,8 +235,6 @@ case COUNTDOWN:
     encL.setCount(0);
     encR.setCount(0);
     currentSensors.distanceDriven = 0; 
-    obstacleDetectCount = 0;
-    obstacleClearCount = 0;
     lastSavedDistance = 0;
     lastSavedLinePosition = 0;
     
