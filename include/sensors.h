@@ -2,24 +2,23 @@
 #define SENSORS_H
 
 #include <Arduino.h>
+#include <ESP32Encoder.h> // Zorg dat deze hier ook staat voor het type
 
 struct SensorData {
-    int irValues[8];      // Ruwe analoge waarden
-    uint8_t sensorMask;   // De 11000011 weergave
-    float linePosition;   // Waarde tussen -1.0 (links) en 1.0 (rechts). 0.0 is centraal.
-    float distance;       // Gefilterde afstand in cm
-    long leftTicks;
-    long rightTicks;
-    float distanceDriven; // Gemiddelde afstand in cm
-    bool lineDetected;    // Zien we überhaupt een lijn?
+    uint8_t sensorMask;
+    float linePosition;
+    bool lineDetected;
+    float distance;         // Ultrasoon
+    float distanceDriven;   // Encoders in cm
+    int32_t leftTicks;
+    int32_t rightTicks;
+    int irValues[8];
 };
 
-// Maak de data beschikbaar voor main.cpp
 extern volatile SensorData currentSensors;
+extern ESP32Encoder encL; // <--- VOEG DIT TOE
+extern ESP32Encoder encR; // <--- VOEG DIT TOE
 
-
-void startSensorTask(); // Start de loop op Core 0
-float getLinePosition(); // Helper functie voor PID
-
+void startSensorTask();
 
 #endif

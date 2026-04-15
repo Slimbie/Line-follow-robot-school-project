@@ -28,17 +28,14 @@ void sensorTaskLoop(void * pvParameters) {
         float noemersum = 0;
         uint8_t mask = 0;
         bool seesLine = false;
-
-        // De gewichten die jij fijn vond
         int weights[8] = {-40, -30, -20, -10, 10, 20, 30, 40};
 
         for (int i = 0; i < 8; i++) {
             int val = analogRead(sensorPinnen[i]);
             currentSensors.irValues[i] = val;
-            
             if (val > IR_THRESHOLD) {
                 seesLine = true;
-                mask |= (1 << (7 - i)); // Bouw de bitmask op
+                mask |= (1 << (7 - i));
                 teller += (float)weights[i]; 
                 noemersum++;
             }
@@ -46,19 +43,17 @@ void sensorTaskLoop(void * pvParameters) {
         
         currentSensors.lineDetected = seesLine;
         currentSensors.sensorMask = mask;
+        currentSensors.linePosition = (noemersum > 0) ? (teller / noemersum) : 0;
 
-        if (noemersum > 0) {
-            currentSensors.linePosition = teller / noemersum; 
-        } else {
-            currentSensors.linePosition = 0; 
-        }
-
-        // Ruwe afstand lezen voor debug
-        currentSensors.distance = readUltrasonic();
-
+        // AFSTAND BEREKENING (Slechts 1 keer!)
         currentSensors.leftTicks = encL.getCount();
         currentSensors.rightTicks = encR.getCount();
-        currentSensors.distanceDriven = ((currentSensors.leftTicks + currentSensors.rightTicks) / 2.0) / TICKS_PER_CM;
+        
+        // We gebruiken jouw 58 ticks per cm
+        float avgTicks = (abs(currentSensors.leftTicks) + abs(currentSensors.rightTicks)) / 2.0;
+        currentSensors.distanceDriven = avgTicks / 58.0; 
+
+        currentSensors.distance = readUltrasonic();
 
         vTaskDelay(1 / portTICK_PERIOD_MS);
     }

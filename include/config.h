@@ -23,13 +23,14 @@ const int sensorPinnen[SENSOR_COUNT] = {32, 33, 34, 35, 36, 39, 25, 26};
 #define KD 16.0
 //Kp = 2.3, Ki = 0.00, Kd = 16.0; 
 
-#define BASE_SPEED_MAPPING 100 // Rustige snelheid voor het mappen
-#define MAX_SPEED 255
+#define BASE_SPEED_MAPPING 60 // Rustige snelheid voor het mappen
+#define BASE_SPEED_turns 100 // Rustige snelheid voor het mappen
+#define MAX_SPEED 180 //kan tot 255, maar 200 is vaak al snel genoeg
 
 // --- Ultrasoon ---
 #define TRIG_PIN 5
 #define ECHO_PIN 18
-#define DISTANCE_THRESHOLD 5.0 // cm
+#define DISTANCE_THRESHOLD 25.0 // cm
 
 // --- Motoren (L298N / OT2065) ---
 // Links
