@@ -12,7 +12,9 @@ void sensorTaskLoop(void * pvParameters);
 float readUltrasonic();
 
 void startSensorTask() {
-    ESP32Encoder::useInternalWeakPullResistors = UP;
+    // C++ Truc: We dwingen '1' (PULLUP) naar het type dat de library verwacht, wat de naam nu ook is.
+    ESP32Encoder::useInternalWeakPullResistors = (decltype(ESP32Encoder::useInternalWeakPullResistors))1;
+    
     encL.attachFullQuad(ENC_L_A, ENC_L_B);
     encR.attachFullQuad(ENC_R_A, ENC_R_B);
 
@@ -21,6 +23,8 @@ void startSensorTask() {
 
     xTaskCreatePinnedToCore(sensorTaskLoop, "SensorTask", 4000, NULL, 1, NULL, 0);
 }
+
+
 
 void sensorTaskLoop(void * pvParameters) {
     for(;;) {

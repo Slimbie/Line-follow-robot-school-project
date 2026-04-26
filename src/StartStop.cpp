@@ -4,6 +4,7 @@
 #include "motors.h"
 #include "types.h"
 
+
 static bool isCheckingFinish = false;
 static float finishCheckStartDist = 0;
 

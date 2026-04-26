@@ -4,6 +4,18 @@
 
 #include <Arduino.h>
 
+
+// --- Start/Finish Instellingen ---
+#define USE_START_FINISH true
+#define FINISH_DRIVE_ON_CM 10.0 // Hoeveel cm doorrijden na detectie balk
+
+// --- Logica Instellingen ---
+#define MID_SENSOR_MASK 0b00011000
+#define SAVE_POINT_INTERVAL 5.0
+
+// Corrigeer ook deze (hoofdletters maken):
+#define BASE_SPEED_TURNS 100
+
 // Voeg dit toe aan Config.h
 #define TICKS_PER_CM 58.0 // Aantal encoder ticks per centimeter (afhankelijk van je wielen en encoders)
 

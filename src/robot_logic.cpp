@@ -1,6 +1,6 @@
 #include "robot_logic.h"
 #include "types.h"
-#include "config.h"
+#include "Config.h" // Met hoofdletter C
 #include "sensors.h"
 #include "motors.h"
 #include "StartStop.h"
@@ -26,7 +26,8 @@ void detectSharpTurnEntry(uint8_t mask, float error) {
         inSharpTurnMode = true;
         sharpTurnDir = leftSide ? -1 : 1;
         sharpTurnEntryTime = millis();
-        route.push_back({currentSensors.distanceDriven, (sharpTurnDir == -1 ? SHARP_LEFT : SHARP_RIGHT), BASE_SPEED_TURNS, error, true, false});
+        // EXPLICIET TYPE TOEVOEGEN:
+        route.push_back(EnhancedRoutePoint{currentSensors.distanceDriven, (sharpTurnDir == -1 ? SHARP_LEFT : SHARP_RIGHT), (uint8_t)BASE_SPEED_TURNS, error, true, false});
     }
 }
 
@@ -38,7 +39,8 @@ void handleSharpTurnInFlight() {
 
     if (currentSensors.sensorMask & MID_SENSOR_MASK) {
         inSharpTurnMode = false;
-        route.push_back({currentSensors.distanceDriven, STRAIGHT, BASE_SPEED_TURNS, 0, false, true});
+        // EXPLICIET TYPE TOEVOEGEN:
+        route.push_back(EnhancedRoutePoint{currentSensors.distanceDriven, STRAIGHT, (uint8_t)BASE_SPEED_TURNS, 0, false, true});
     }
 }
 
@@ -56,9 +58,8 @@ void updateLogic(RobotState &currentState) {
 
     FinishState fStatus = checkFinishStatus();
     
-    // Intersectie afhandeling (Linkerhand regel)
     if (fStatus == INTERSECTION_DETECTED) {
-        sharpTurnDir = -1; // Forceer links
+        sharpTurnDir = -1; 
         inSharpTurnMode = true;
         sharpTurnEntryTime = millis();
         return;
@@ -73,13 +74,13 @@ void updateLogic(RobotState &currentState) {
             detectSharpTurnEntry(currentSensors.sensorMask, currentSensors.linePosition);
             executePID(BASE_SPEED_MAPPING);
             if (currentSensors.distanceDriven - lastSavedDist >= SAVE_POINT_INTERVAL) {
-                route.push_back({currentSensors.distanceDriven, STRAIGHT, BASE_SPEED_MAPPING, currentSensors.linePosition, false, false});
+                // EXPLICIET TYPE TOEVOEGEN:
+                route.push_back(EnhancedRoutePoint{currentSensors.distanceDriven, STRAIGHT, (uint8_t)BASE_SPEED_MAPPING, currentSensors.linePosition, false, false});
                 lastSavedDist = currentSensors.distanceDriven;
             }
         } else { setMotorSpeed(-60, 60); }
     } 
     else if (currentState == SPEEDRUN) {
-        // Simpele versie van lookahead voor nu
         executePID(MAX_SPEED);
     }
 }
