@@ -42,6 +42,10 @@ void setMotorSpeed(int speedL, int speedR) {
     ledcWrite(MOT_R_PWM, abs(speedR));
 }
 
+
+
+
+
 void stopMotors() {
     setMotorSpeed(0, 0);
 }

@@ -5,14 +5,9 @@
 #include <vector>
 
 // Hoofd states van de robot
-enum RobotState {
-    IDLE,
-    COUNTDOWN,
-    MAPPING,
-    SPEEDRUN,
-    FINISHED,
-    DATA_DUMP
-};
+enum Mode { READY, MAPPING, FINISHED, SPEEDRUN, DATADUMP };
+enum TurnType { STRAIGHT, SHARP_LEFT, SHARP_RIGHT };
+
 
 // Bocht types voor robuuste opslag
 enum TurnType {

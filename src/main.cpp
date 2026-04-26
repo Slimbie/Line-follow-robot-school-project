@@ -1,74 +1,105 @@
 #include <Arduino.h>
-#include "Config.h"
 #include "types.h"
+#include "Config.h"
 #include "Sensors.h"
 #include "Motors.h"
-#include "StartStop.h"
 #include "robot_logic.h"
+#include "StartStop.h"
 
-RobotState currentState = IDLE;
-unsigned long stateStartTime = 0;
+Mode currentMode = READY;
+unsigned long lastSerialUpdate = 0;
 
 void setup() {
     Serial.begin(115200);
+    delay(500);
+    
     setupMotors();
-    startSensorTask(); // Zorg dat deze decltype trick bevat als je op Core v3.0 zit
     initLogic();
     pinMode(BUTTON_PIN, INPUT_PULLUP);
-    Serial.println("Robot Ready. Press button to START MAPPING.");
+    startSensorTask();
+
+    Serial.println("\n[SYSTEM] Robot Ready. Mode: READY");
 }
 
 void loop() {
-    bool buttonPressed = (digitalRead(BUTTON_PIN) == LOW);
-    
-    // Simpele knop debounce en state wissel
-    if (buttonPressed) {
-        delay(200); // debounce
-        if (currentState == IDLE) {
-            currentState = MAPPING;
-            resetLogic();
-            resetStartSequence();
-            stateStartTime = millis();
-            Serial.println("Starting MAPPING...");
-        } else if (currentState == FINISHED) {
-            currentState = SPEEDRUN;
-            resetStartSequence();
-            stateStartTime = millis();
-            Serial.println("Starting SPEEDRUN...");
-        } else if (currentState == SPEEDRUN) {
-            currentState = DATA_DUMP;
+    // --- BUTTON LOGIC (State Machine Switch) ---
+    if (digitalRead(BUTTON_PIN) == LOW) {
+        delay(200); // Debounce
+        
+        switch (currentMode) {
+            case READY:
+                resetLogic();
+                resetStartSequence();
+                currentMode = MAPPING;
+                Serial.println(">>> MODE: MAPPING START");
+                break;
+
+            case MAPPING:
+                stopMotors();
+                currentMode = FINISHED;
+                Serial.println(">>> MODE: FINISHED");
+                break;
+
+            case FINISHED:
+                // CRASH PREVENTION: Alleen starten als er data is
+                if (!route.empty()) {
+                    resetStartSequence();
+                    currentMode = SPEEDRUN;
+                    Serial.println(">>> MODE: SPEEDRUN START");
+                } else {
+                    Serial.println("[ERROR] Geen route in geheugen! Map eerst.");
+                }
+                break;
+
+            case SPEEDRUN:
+                stopMotors();
+                currentMode = DATADUMP;
+                Serial.println(">>> MODE: DATADUMP");
+                break;
+
+            case DATADUMP:
+                dumpEnhancedRoute(millis()); // Print alle data
+                currentMode = READY;
+                Serial.println(">>> MODE: READY");
+                break;
         }
-        while(digitalRead(BUTTON_PIN) == LOW); // Wacht tot losgelaten
+
+        while(digitalRead(BUTTON_PIN) == LOW) yield(); // Wacht op loslaten
     }
 
-    switch (currentState) {
-        case IDLE:
+    // --- MODE EXECUTION ---
+    switch (currentMode) {
+        case READY:
             stopMotors();
             break;
 
         case MAPPING:
+            // Output voor overzicht (elke 100ms)
+            if (millis() - lastSerialUpdate > 100) {
+                // we inverteren de Right Ticks hier visueel als de encoder fysiek omgedraaid is
+                int32_t rTicks = RIGHT_MOTOR_REVERSED ? -currentSensors.rightTicks : currentSensors.rightTicks;
+                Serial.printf("Dist: %.1f | L-Enc: %d | R-Enc: %d\n", 
+                    currentSensors.distanceDriven, currentSensors.leftTicks, rTicks);
+                lastSerialUpdate = millis();
+            }
+
+            if (handleStartLogic()) {
+                // In robot_logic.cpp gebruiken we nu 'MAPPING' branch
+                updateLogic(currentMode); 
+            }
+            break;
+
         case SPEEDRUN:
             if (handleStartLogic()) {
-                updateLogic(currentState);
+                updateLogic(currentMode);
             }
             break;
 
         case FINISHED:
-            stopMotors();
-            Serial.println("Track Finished! Press button for Speedrun.");
-            delay(1000); // Voorkom spam
-            break;
-
-        case DATA_DUMP:
-            stopMotors();
-            dumpEnhancedRoute(millis() - stateStartTime);
-            currentState = IDLE; // Terug naar start
-            break;
-            
-        default:
+        case DATADUMP:
             stopMotors();
             break;
     }
-    
-    delay(1);
+
+    yield();
 }
