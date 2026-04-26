@@ -1,40 +1,57 @@
 #ifndef TYPES_H
 #define TYPES_H
 
-#include <Arduino.h>
+#include <stdint.h>
+#include <vector>
 
-// Centrale definities om circulaire afhankelijkheden te voorkomen
-enum RobotState { 
-    IDLE, 
-    MAPPING, 
-    SPEEDRUN, 
-    OBSTACLE_STOP, 
-    FINISHED 
+// Hoofd states van de robot
+enum RobotState {
+    IDLE,
+    COUNTDOWN,
+    MAPPING,
+    SPEEDRUN,
+    FINISHED,
+    DATA_DUMP
 };
 
+// Bocht types voor robuuste opslag
 enum TurnType {
     STRAIGHT,
-    NORMAL_TURN,
     SHARP_LEFT,
     SHARP_RIGHT,
-    INTERSECTION,
-    DEAD_END
+    TURN_90_REGULAR
 };
 
-enum FinishState { 
-    NOT_FINISH, 
-    CHECKING_FINISH, 
+// Start/Stop en Kruispunt detectie
+enum FinishState {
+    NOT_FINISH,
+    CHECKING_FINISH,
     FINISH_CONFIRMED,
-    INTERSECTION_DETECTED 
+    INTERSECTION_DETECTED
 };
 
+// Het nieuwe, geavanceerde route punt
 struct EnhancedRoutePoint {
     float distance;
     TurnType turnType;
     uint8_t recommendedSpeed;
-    float linePosition;
+    float errorAtPoint; // Lijnpositie of error
     bool isSharpTurnEntry;
     bool isSharpTurnExit;
 };
+
+// Sensor struct (zoals je al gebruikte)
+struct SensorData {
+    bool lineDetected;
+    uint8_t sensorMask;
+    float linePosition;
+    float distanceDriven;
+    float distance; // Ultrasoon
+    int32_t leftTicks;
+    int32_t rightTicks;
+    int irValues[8];
+};
+
+extern volatile SensorData currentSensors; // Globale sensor data
 
 #endif

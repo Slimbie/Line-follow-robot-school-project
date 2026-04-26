@@ -70,4 +70,18 @@ const int sensorPinnen[SENSOR_COUNT] = {32, 33, 34, 35, 36, 39, 25, 26};
 #define ENC_R_A 15
 #define ENC_R_B 2
 
+// --- Overige ---
+//kijk na of de volgende dubbel is met de motor pinnen, anders aanpassen
+
+#define BASE_SPEED_MAPPING 100
+#define MAX_SPEED 180
+#define BASE_SPEED_TURNS 90
+#define MID_SENSOR_MASK 0b00011000
+#define KP 1.5   // Jouw PID waardes
+#define KD 5.0   // Jouw PID waardes
+#define USE_START_FINISH true
+#define FINISH_DRIVE_ON_CM 10.0
+#define SAVE_POINT_INTERVAL 5.0
+#define BUTTON_PIN 0 // Of de pin die je gebruikt
+
 #endif
