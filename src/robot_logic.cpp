@@ -22,10 +22,11 @@ void detectSharpTurnEntry(uint8_t mask, float error) {
     bool rightSide = (mask & 0b00000011);
     bool midSensors = (mask & MID_SENSOR_MASK);
 
-    if ((leftSide || rightSide) && midSensors && !inSharpTurnMode) {
+    if (!midSensors && (leftSide || rightSide) && !inSharpTurnMode) {
         inSharpTurnMode = true;
         sharpTurnDir = leftSide ? -1 : 1;
         sharpTurnEntryTime = millis();
+        Serial.printf("Sharp turn detected, turning %s\n", sharpTurnDir == -1 ? "left" : "right");
         // EXPLICIET TYPE TOEVOEGEN:
         route.push_back(EnhancedRoutePoint{currentSensors.distanceDriven, (sharpTurnDir == -1 ? SHARP_LEFT : SHARP_RIGHT), (uint8_t)BASE_SPEED_TURNS, error, true, false});
     }

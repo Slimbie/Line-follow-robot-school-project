@@ -16,6 +16,7 @@ enum ObstaclePhase
   OB_DRIVE_RIGHT,
   OB_SEARCH_LINE
 };
+
 ObstaclePhase obstaclePhase = OB_NONE;
 unsigned long obstacleStartTime = 0;
 float obstacleStartDistance = 0;
@@ -38,10 +39,24 @@ unsigned long speedrunModeStartTime = 0;
 unsigned long mappingElapsedTime = 0;
 unsigned long speedrunElapsedTime = 0;
 static uint8_t lastSensorMask = 0;
+static unsigned long finishDetectStartTime = 0;
+static bool finishPaused = false;
 
 // Variabelen voor de knop
 int buttonPressCount = 0;
 bool lastButtonState = HIGH; // We gaan uit van INPUT_PULLUP
+
+// Helper: Detect sharp turn direction based on sensor pattern
+// Returns: -1 for LEFT turn, 1 for RIGHT turn, 0 for no turn
+inline int detectSharpTurnDirection(uint8_t mask) {
+    bool midSensors = (mask & MID_SENSOR_MASK) != 0;
+    bool leftExtreme = (mask & 0b11000000) != 0;  // sensors 0-1
+    bool rightExtreme = (mask & 0b00000011) != 0; // sensors 6-7
+    
+    if (!midSensors && leftExtreme && !rightExtreme) return -1;  // LEFT
+    if (!midSensors && !leftExtreme && rightExtreme) return 1;   // RIGHT
+    return 0; // No sharp turn
+}
 
 inline bool isFullBlack() {
     return currentSensors.sensorMask == 0xFF;
@@ -76,7 +91,7 @@ inline bool onlyMiddleLastSeen(uint8_t mask) {
 void performDeadEndRecovery() {
     Serial.println("Dead-end gedetecteerd, 180 graden draaien.");
     stopMotors();
-    setMotorSpeed(140, -140);
+    setMotorSpeed(120, -120);
     delay(TURN_180_DURATION_MS);
     stopMotors();
     delay(120);
@@ -287,6 +302,7 @@ void loop()
 
   // --- Dead-end detectie ---
   if (!currentSensors.lineDetected && onlyMiddleLastSeen(lastSensorMask) && currentSensors.distanceDriven > 5.0) {
+      Serial.println("Dead-end detected - Turning 180");
       markLastNodeDeadEnd();
       performDeadEndRecovery();
   }
@@ -329,68 +345,106 @@ case COUNTDOWN:
     }
     break;
 
-  case MAPPING: {
-    if (obstacleConfirmed()) {
-      beginObstacleAvoidance(currentState);
-      break;
-    }
+case MAPPING: {
+    static unsigned long whiteTime = 0; 
+    static int lastSideSeen = 0; // -1 voor links, 1 voor rechts, 0 voor midden
 
-    FinishState finishStatus = checkFinishStatus();
-    if (finishStatus == CHECKING_FINISH) {
-        break;
-    }
-    if (finishStatus == FINISH_CONFIRMED) {
-        Serial.println("Finish bereikt tijdens mapping! Stoppen.");
-        currentState = IDLE;
-        stopMotors();
-        break;
-    }
-    else if (finishStatus == INTERSECTION_DETECTED) {
-        uint8_t branches = probeAvailableBranches();
-        uint8_t chosenBranch = chooseLeftHandBranch(branches);
-        saveIntersectionNode(currentSensors.distanceDriven, chosenBranch, branches);
-        Serial.printf("Kruispunt opgeslagen op %.1f cm, branches=0x%02X, gekozen=%d\n",
-                      currentSensors.distanceDriven, branches, chosenBranch);
-    }
-
-    calculatePID();
-
-    // DEBUG: Print elke 200ms de status inclusief gereden afstand
+    // --- 1. SENSOR DATA PRINTEN ---
     static unsigned long lastPrint = 0;
-    if (millis() - lastPrint > 200) {
+    if (millis() - lastPrint > 150) {
         Serial.print("Sensoren: [");
         for (int i = 7; i >= 0; i--) {
             Serial.print((currentSensors.sensorMask & (1 << i)) ? "X" : "_");
         }
-        // NU OOK MET AFSTAND (Driven):
-        Serial.printf("] | Pos: %5.1f | Dist: %5.1f | Driven: %5.1f cm\n",
-                      currentSensors.linePosition,
-                      currentSensors.distance,
-                      currentSensors.distanceDriven);
+        Serial.printf("] | Driven: %5.1f cm | ", currentSensors.distanceDriven);
+        if (finishPaused) Serial.print("STATUS: PAUZE");
+        else if (whiteTime > 0) Serial.print("STATUS: ZOEKEND");
+        else Serial.print("STATUS: VOLGEN");
+        Serial.println();
         lastPrint = millis();
     }
 
-    // OPSLAAN LOGICA:
-    bool shouldSave = false;
-    float distSinceLastSave = abs(currentSensors.distanceDriven - lastSavedDistance);
-    float lineShift = abs(currentSensors.linePosition - lastSavedLinePosition);
+    // --- 2. UPDATE GEHEUGEN (Welke kant zagen we laatst?) ---
+    if (currentSensors.sensorMask & 0b11100000) lastSideSeen = -1; // Links gezien
+    else if (currentSensors.sensorMask & 0b00000111) lastSideSeen = 1; // Rechts gezien
+    else if (currentSensors.sensorMask & 0b00011000) lastSideSeen = 0; // Midden gezien
 
-    if (distSinceLastSave >= NODE_SAVE_DISTANCE) {
-        shouldSave = true;
-    } else if (abs(currentSensors.linePosition) > 20.0 && distSinceLastSave >= 2.0 && lineShift > 8.0) {
-        shouldSave = true;
+    // --- 3. ACTIES ---
+
+    // A. Finish & Kruispunt
+    FinishState finishStatus = checkFinishStatus();
+    if (finishStatus == FINISH_CONFIRMED || finishStatus == CHECKING_FINISH) break;
+
+    if (finishStatus == INTERSECTION_DETECTED) {
+        whiteTime = 0; 
+        Serial.println(">>> T-SPLITSING: Geforceerd LINKS <<<");
+        uint8_t branches = probeAvailableBranches();
+        setMotorSpeed(-BASE_SPEED_TURNS, BASE_SPEED_TURNS);
+        delay(250); 
+        unsigned long turnStart = millis();
+        while (!currentSensors.lineDetected && millis() - turnStart < 2000) { delay(10); }
+        stopMotors();
+        saveIntersectionNode(currentSensors.distanceDriven, BRANCH_LEFT, branches);
+        break;
     }
 
-    if (shouldSave) {
-        savePoint(currentSensors.distanceDriven, currentSensors.linePosition, currentSensors.distance, currentSensors.leftTicks, currentSensors.rightTicks);
-        lastSavedDistance = currentSensors.distanceDriven;
-        lastSavedLinePosition = currentSensors.linePosition;
-        Serial.println(">>> PUNT OPGESLAGEN <<<");
+    // B. Scherpe Bocht Reflex
+    int sharpTurn = detectSharpTurnDirection(currentSensors.sensorMask);
+    if (sharpTurn != 0) {
+        whiteTime = 0; 
+        if (sharpTurn == -1) setMotorSpeed(-MAX_SPEED * 0.7, MAX_SPEED * 0.7);
+        else setMotorSpeed(MAX_SPEED * 0.7, -MAX_SPEED * 0.7);
+        break;
     }
-    }
-    break;
 
-  case SPEEDRUN:
+    // C. Lijnvolgen of Dead-end/Bocht Zoeken
+    if (currentSensors.lineDetected) {
+        whiteTime = 0; 
+        calculatePID();
+    } else {
+        // LIJN KWIJT: Wat was het laatste dat we zagen?
+        if (whiteTime == 0) whiteTime = millis();
+
+        if (lastSideSeen == -1) {
+            // We zagen laatst links iets -> Blijf links draaien om de bocht te vangen
+            Serial.println(">>> BOCHT ZOEKEN: Links <<<");
+            setMotorSpeed(-BASE_SPEED_TURNS, BASE_SPEED_TURNS);
+        } 
+        else if (lastSideSeen == 1) {
+            // We zagen laatst rechts iets -> Blijf rechts draaien
+            Serial.println(">>> BOCHT ZOEKEN: Rechts <<<");
+            setMotorSpeed(BASE_SPEED_TURNS, -BASE_SPEED_TURNS);
+        }
+        else {
+            // Het was in het midden kwijt -> Waarschijnlijk echt een Dead-end
+            if (millis() - whiteTime > 600) { 
+                Serial.println(">>> DEAD-END BEVESTIGD: 180° <<<");
+                markLastNodeDeadEnd();
+                performDeadEndRecovery();
+                whiteTime = 0;
+                break;
+            } else {
+                setMotorSpeed(BASE_SPEED_MAPPING - 15, BASE_SPEED_MAPPING - 15);
+            }
+        }
+    }
+
+    // D. Opslaan
+    if (currentSensors.lineDetected) {
+        float distSinceLastSave = abs(currentSensors.distanceDriven - lastSavedDistance);
+        if (distSinceLastSave >= NODE_SAVE_DISTANCE) {
+            savePoint(currentSensors.distanceDriven, currentSensors.linePosition, 
+                      currentSensors.distance, currentSensors.leftTicks, currentSensors.rightTicks);
+            lastSavedDistance = currentSensors.distanceDriven;
+        }
+    }
+  }
+  break;
+
+
+  
+  
+case SPEEDRUN:
     if (obstacleConfirmed()) {
       beginObstacleAvoidance(currentState);
       break;
