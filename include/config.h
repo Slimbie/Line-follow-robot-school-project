@@ -11,9 +11,20 @@
 
 // --- Logica Instellingen ---
 #define MID_SENSOR_MASK 0b00011000
+#define LEFT_SIDE_MASK 0b11110000
+#define RIGHT_SIDE_MASK 0b00001111
 #define SAVE_POINT_INTERVAL 5.0
+#define NODE_SAVE_DISTANCE 5.0
+#define INTERSECTION_PROBE_MS 120
+#define TURN_180_DURATION_MS 850
+#define SPEEDRUN_LOOKAHEAD_POINTS 8
+#define ZIGZAG_THRESHOLD 12.0
+#define SHARP_TURN_THRESHOLD 25.0
+#define BRANCH_MASK_LEFT 0x01
+#define BRANCH_MASK_STRAIGHT 0x02
+#define BRANCH_MASK_RIGHT 0x04
+#define MAX_NODES 100
 
-// Corrigeer ook deze (hoofdletters maken):
 #define BASE_SPEED_TURNS 100
 
 // Voeg dit toe aan Config.h
@@ -36,7 +47,7 @@ const int sensorPinnen[SENSOR_COUNT] = {32, 33, 34, 35, 36, 39, 25, 26};
 //Kp = 2.3, Ki = 0.00, Kd = 16.0; 
 
 #define BASE_SPEED_MAPPING 60 // Rustige snelheid voor het mappen
-#define BASE_SPEED_turns 100 // Rustige snelheid voor het mappen
+//#define BASE_SPEED_turns 100 // Verouderde macro, gebruik BASE_SPEED_TURNS
 #define MAX_SPEED 180 //kan tot 255, maar 200 is vaak al snel genoeg
 
 // --- Ultrasoon ---

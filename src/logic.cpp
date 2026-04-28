@@ -49,6 +49,28 @@ void prepareSpeedrun() {
     lastLoggedDist = 0;
 }
 
+static bool applyNodeBias(int mappingIndex, int &leftPWM, int &rightPWM, int targetSpeed) {
+    if (mappingIndex < 0 || mappingIndex >= mapIndex) return false;
+    const PathPoint &node = trackMap[mappingIndex];
+    if (!node.isNode || node.branchDirection == BRANCH_NONE) return false;
+
+    switch (node.branchDirection) {
+        case BRANCH_RIGHT:
+            leftPWM = targetSpeed + 30;
+            rightPWM = targetSpeed - 30;
+            return true;
+        case BRANCH_LEFT:
+            leftPWM = targetSpeed - 30;
+            rightPWM = targetSpeed + 30;
+            return true;
+        case BRANCH_STRAIGHT:
+            leftPWM = targetSpeed;
+            rightPWM = targetSpeed;
+            return true;
+        default:
+            return false;
+    }
+}
 
 void calculateSpeedrun() {
     float currentDist = currentSensors.distanceDriven;
@@ -134,6 +156,11 @@ void calculateSpeedrun() {
 
     leftPWM = constrain(leftPWM, minSpeed, MAX_SPEED);
     rightPWM = constrain(rightPWM, minSpeed, MAX_SPEED);
+
+    // Gebruik kaartinformatie om de juiste branch te nemen bij een opgeslagen kruispunt
+    if (applyNodeBias(mappingIndex, leftPWM, rightPWM, (int)smoothSpeed)) {
+        Serial.printf("Speedrun branch override bij node %d: left=%d right=%d\n", mappingIndex, leftPWM, rightPWM);
+    }
 
     setMotorSpeed(leftPWM, rightPWM);
 

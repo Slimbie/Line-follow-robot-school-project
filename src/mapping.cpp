@@ -1,4 +1,5 @@
 #include "Mapping.h"
+#include "Config.h"
 
 // --- 1. GLOBALE VARIABELEN (Slechts één keer declareren) ---
 PathPoint trackMap[MAX_POINTS];
@@ -21,23 +22,44 @@ int getMapIndexAtDistance(float currentDist) {
     return (mapIndex > 0) ? mapIndex - 1 : 0; 
 }
 
-void savePoint(float dist, float curve, float obsDist, int32_t lTicks, int32_t rTicks) {
+int getLastNodeIndex(float currentDist) {
+    for (int i = mapIndex - 1; i >= 0; i--) {
+        if (trackMap[i].isNode && trackMap[i].distance <= currentDist) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+const char* branchDirectionName(uint8_t dir) {
+    switch (dir) {
+        case BRANCH_LEFT: return "LEFT";
+        case BRANCH_STRAIGHT: return "STRAIGHT";
+        case BRANCH_RIGHT: return "RIGHT";
+        case BRANCH_BACK: return "BACK";
+        default: return "NONE";
+    }
+}
+
+void savePoint(float dist, float curve, float obsDist, int32_t lTicks, int32_t rTicks,
+               uint8_t branchDirection, bool isNode,
+               bool isDeadEnd, bool isZigzag, uint8_t availableBranches) {
     if (mapIndex < MAX_POINTS) {
         uint8_t detectedType = 0;
-        float absCurve = abs(curve);
-        float absLastCurve = abs(lastCurve);
 
         // Detecteer echte zigzags: snel wisselende richting
-        if ((curve < -12.0 && lastCurve > 12.0) || (curve > 12.0 && lastCurve < -12.0)) {
+        if ((curve < -ZIGZAG_THRESHOLD && lastCurve > ZIGZAG_THRESHOLD) ||
+            (curve > ZIGZAG_THRESHOLD && lastCurve < -ZIGZAG_THRESHOLD)) {
             detectedType = 1; // Zigzag
+            isZigzag = true;
         }
         else if (obsDist < 30.0 && obsDist > 1.0) {
-            detectedType = 6;
+            detectedType = 6; // Obstakel of smalle passage
         }
-        else if (curve <= -25.0) {
+        else if (curve <= -SHARP_TURN_THRESHOLD) {
             detectedType = 4; // Scherp Links
         }
-        else if (curve >= 25.0) {
+        else if (curve >= SHARP_TURN_THRESHOLD) {
             detectedType = 5; // Scherp Rechts
         }
         else if (curve <= -12.0) {
@@ -50,10 +72,15 @@ void savePoint(float dist, float curve, float obsDist, int32_t lTicks, int32_t r
         trackMap[mapIndex].distance = dist;
         trackMap[mapIndex].curve = curve;
         trackMap[mapIndex].type = detectedType;
-        trackMap[mapIndex].leftTicks = abs(lTicks);   
+        trackMap[mapIndex].branchDirection = branchDirection;
+        trackMap[mapIndex].availableBranches = availableBranches;
+        trackMap[mapIndex].isNode = isNode;
+        trackMap[mapIndex].isDeadEnd = isDeadEnd;
+        trackMap[mapIndex].isZigzag = isZigzag;
+        trackMap[mapIndex].leftTicks = abs(lTicks);
         trackMap[mapIndex].rightTicks = abs(rTicks);
 
-        lastCurve = curve; 
+        lastCurve = curve;
         mapIndex++;
     }
 }
@@ -66,12 +93,21 @@ void dumpMap(unsigned long travelTime) {
     Serial.print("Totale afstand: "); Serial.print(totaleAfstand); Serial.println(" cm");
     
     Serial.println("-----------------------------------");
-    Serial.println("Punt;Afstand_cm;Lijn_Positie;Type_ID;LeftTicks;RightTicks");
+    Serial.println("Punt;Afstand_cm;Lijn_Positie;Type_ID;Node;Branch;DeadEnd;Zigzag;Branches;LeftTicks;RightTicks");
     
     for (int i = 0; i < mapIndex; i++) {
-        Serial.printf("%d;%.1f;%.2f;%d;%d;%d\n", 
-            i, trackMap[i].distance, trackMap[i].curve, 
-            trackMap[i].type, trackMap[i].leftTicks, trackMap[i].rightTicks);
+        Serial.printf("%d;%.1f;%.2f;%d;%d;%s;%d;%d;%d;%d;%d\n",
+            i,
+            trackMap[i].distance,
+            trackMap[i].curve,
+            trackMap[i].type,
+            trackMap[i].isNode ? 1 : 0,
+            branchDirectionName(trackMap[i].branchDirection),
+            trackMap[i].isDeadEnd ? 1 : 0,
+            trackMap[i].isZigzag ? 1 : 0,
+            trackMap[i].availableBranches,
+            trackMap[i].leftTicks,
+            trackMap[i].rightTicks);
     }
     Serial.println("======= EINDE DATA DUMP =======\n");
 }

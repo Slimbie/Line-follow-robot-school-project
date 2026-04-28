@@ -4,20 +4,12 @@
 #include "Motors.h"
 #include "Logic.h"
 #include "Mapping.h"
+#include "StartStop.h"
 
 
-enum State
-{
-  IDLE,
-  COUNTDOWN,
-  MAPPING,
-  SPEEDRUN,
-  OBSTACLE_STOP,
-  DATA_DUMP
-};
 //begin variabelen
-State currentState = IDLE;
-State previousState = IDLE;
+RobotState currentState = IDLE;
+RobotState previousState = IDLE;
 enum ObstaclePhase
 {
   OB_NONE,
@@ -45,10 +37,83 @@ unsigned long mappingStartTime = 0;
 unsigned long speedrunModeStartTime = 0;
 unsigned long mappingElapsedTime = 0;
 unsigned long speedrunElapsedTime = 0;
+static uint8_t lastSensorMask = 0;
 
 // Variabelen voor de knop
 int buttonPressCount = 0;
 bool lastButtonState = HIGH; // We gaan uit van INPUT_PULLUP
+
+inline bool isFullBlack() {
+    return currentSensors.sensorMask == 0xFF;
+}
+
+inline uint8_t getBranchMask(uint8_t mask) {
+    uint8_t branches = 0;
+    if (mask & LEFT_SIDE_MASK) branches |= BRANCH_MASK_LEFT;
+    if (mask & MID_SENSOR_MASK) branches |= BRANCH_MASK_STRAIGHT;
+    if (mask & RIGHT_SIDE_MASK) branches |= BRANCH_MASK_RIGHT;
+    return branches;
+}
+
+inline uint8_t chooseLeftHandBranch(uint8_t branches) {
+    if (branches & BRANCH_MASK_LEFT) return BRANCH_LEFT;
+    if (branches & BRANCH_MASK_STRAIGHT) return BRANCH_STRAIGHT;
+    if (branches & BRANCH_MASK_RIGHT) return BRANCH_RIGHT;
+    return BRANCH_NONE;
+}
+
+inline uint8_t chooseFallbackBranch(uint8_t branches) {
+    if (branches & BRANCH_MASK_STRAIGHT) return BRANCH_STRAIGHT;
+    if (branches & BRANCH_MASK_RIGHT) return BRANCH_RIGHT;
+    if (branches & BRANCH_MASK_LEFT) return BRANCH_LEFT;
+    return BRANCH_NONE;
+}
+
+inline bool onlyMiddleLastSeen(uint8_t mask) {
+    return (mask & MID_SENSOR_MASK) && !(mask & (LEFT_SIDE_MASK | RIGHT_SIDE_MASK));
+}
+
+void performDeadEndRecovery() {
+    Serial.println("Dead-end gedetecteerd, 180 graden draaien.");
+    stopMotors();
+    setMotorSpeed(140, -140);
+    delay(TURN_180_DURATION_MS);
+    stopMotors();
+    delay(120);
+}
+
+void saveIntersectionNode(float distance, uint8_t branchDirection, uint8_t branchMask) {
+    savePoint(distance,
+              currentSensors.linePosition,
+              currentSensors.distance,
+              currentSensors.leftTicks,
+              currentSensors.rightTicks,
+              branchDirection,
+              true,
+              false,
+              false,
+              branchMask);
+}
+
+void markLastNodeDeadEnd() {
+    int idx = getLastNodeIndex(currentSensors.distanceDriven);
+    if (idx >= 0) {
+        trackMap[idx].isDeadEnd = true;
+        if (trackMap[idx].branchDirection == BRANCH_LEFT) {
+            trackMap[idx].branchDirection = chooseFallbackBranch(trackMap[idx].availableBranches & ~BRANCH_MASK_LEFT);
+        }
+        trackMap[idx].type = 6;
+        Serial.printf("Node %d als doodlopend gemarkeerd, nieuwe richting %d\n", idx, trackMap[idx].branchDirection);
+    }
+}
+
+uint8_t probeAvailableBranches() {
+    setMotorSpeed(BASE_SPEED_MAPPING, BASE_SPEED_MAPPING);
+    delay(INTERSECTION_PROBE_MS);
+    uint8_t branches = getBranchMask(currentSensors.sensorMask);
+    stopMotors();
+    return branches;
+}
 
 bool obstacleInFront() {
   return currentSensors.distance > 1.0 && currentSensors.distance < DISTANCE_THRESHOLD;
@@ -73,7 +138,7 @@ bool obstacleStillDetected() {
   return obstacleClearCount < OBSTACLE_CLEAR_COUNT;
 }
 
-void beginObstacleAvoidance(State fromState) {
+void beginObstacleAvoidance(RobotState fromState) {
   previousState = fromState;
   currentState = OBSTACLE_STOP;
   obstaclePhase = OB_DRIVE_RIGHT;
@@ -219,6 +284,14 @@ void loop()
       currentState = IDLE;
     }
   }
+
+  // --- Dead-end detectie ---
+  if (!currentSensors.lineDetected && onlyMiddleLastSeen(lastSensorMask) && currentSensors.distanceDriven > 5.0) {
+      markLastNodeDeadEnd();
+      performDeadEndRecovery();
+  }
+
+  lastSensorMask = currentSensors.sensorMask;
   lastButtonState = currentButtonState;
 
   // --- 2. STATE MACHINE ---
@@ -262,7 +335,25 @@ case COUNTDOWN:
       break;
     }
 
-    calculatePID(); 
+    FinishState finishStatus = checkFinishStatus();
+    if (finishStatus == CHECKING_FINISH) {
+        break;
+    }
+    if (finishStatus == FINISH_CONFIRMED) {
+        Serial.println("Finish bereikt tijdens mapping! Stoppen.");
+        currentState = IDLE;
+        stopMotors();
+        break;
+    }
+    else if (finishStatus == INTERSECTION_DETECTED) {
+        uint8_t branches = probeAvailableBranches();
+        uint8_t chosenBranch = chooseLeftHandBranch(branches);
+        saveIntersectionNode(currentSensors.distanceDriven, chosenBranch, branches);
+        Serial.printf("Kruispunt opgeslagen op %.1f cm, branches=0x%02X, gekozen=%d\n",
+                      currentSensors.distanceDriven, branches, chosenBranch);
+    }
+
+    calculatePID();
 
     // DEBUG: Print elke 200ms de status inclusief gereden afstand
     static unsigned long lastPrint = 0;
@@ -272,21 +363,19 @@ case COUNTDOWN:
             Serial.print((currentSensors.sensorMask & (1 << i)) ? "X" : "_");
         }
         // NU OOK MET AFSTAND (Driven):
-        Serial.printf("] | Pos: %5.1f | Dist: %5.1f | Driven: %5.1f cm\n", 
-                      currentSensors.linePosition, 
-                      currentSensors.distance, 
+        Serial.printf("] | Pos: %5.1f | Dist: %5.1f | Driven: %5.1f cm\n",
+                      currentSensors.linePosition,
+                      currentSensors.distance,
                       currentSensors.distanceDriven);
         lastPrint = millis();
     }
 
     // OPSLAAN LOGICA:
-    // We gebruiken abs() voor het geval de encoders negatief tellen
-    // OPSLAAN LOGICA:
     bool shouldSave = false;
     float distSinceLastSave = abs(currentSensors.distanceDriven - lastSavedDistance);
     float lineShift = abs(currentSensors.linePosition - lastSavedLinePosition);
 
-    if (distSinceLastSave >= 5.0) {
+    if (distSinceLastSave >= NODE_SAVE_DISTANCE) {
         shouldSave = true;
     } else if (abs(currentSensors.linePosition) > 20.0 && distSinceLastSave >= 2.0 && lineShift > 8.0) {
         shouldSave = true;
@@ -307,7 +396,20 @@ case COUNTDOWN:
       break;
     }
 
-    calculateSpeedrun(); 
+    {
+        FinishState finishStatus = checkFinishStatus();
+        if (finishStatus == CHECKING_FINISH) {
+            break;
+        }
+        if (finishStatus == FINISH_CONFIRMED) {
+            Serial.println("Finish bereikt tijdens speedrun! Stop.");
+            currentState = IDLE;
+            stopMotors();
+            break;
+        }
+    }
+
+    calculateSpeedrun();
 
     // Automatische stop: als we voorbij de gemapte afstand zijn en de lijn echt kwijt raken
     if (mapIndex > 0) {

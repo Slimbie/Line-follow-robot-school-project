@@ -6,9 +6,11 @@
 // Centrale definities om circulaire afhankelijkheden te voorkomen
 enum RobotState { 
     IDLE, 
+    COUNTDOWN,
     MAPPING, 
     SPEEDRUN, 
     OBSTACLE_STOP, 
+    DATA_DUMP,
     FINISHED 
 };
 
