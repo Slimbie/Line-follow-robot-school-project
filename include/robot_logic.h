@@ -2,16 +2,14 @@
 #define ROBOT_LOGIC_H
 
 #include "types.h"
-#include <vector>
 
-// Global route access voor main.cpp indien nodig
 extern std::vector<EnhancedRoutePoint> route;
+extern std::vector<Node> nodeMap;
 
-// Functie definities
 void initLogic();
-void updateLogic(RobotState &currentState);
-void executePID(float targetSpeed);
-void detectSharpTurnEntry(uint8_t mask, float error);
-void handleSharpTurnInFlight();
+Mode updateLogic(RobotState &currentState);
+void dumpEnhancedRoute(unsigned long travelTime);
+void prepareSpeedrun();
+void resetLogic();
 
 #endif

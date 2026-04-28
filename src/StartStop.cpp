@@ -1,9 +1,8 @@
-#include "StartStop.h"
-#include "config.h"
-#include "sensors.h"
-#include "motors.h"
 #include "types.h"
-
+#include "StartStop.h"
+#include "Config.h"
+#include "Sensors.h" // Voor currentSensors
+#include "Motors.h"
 
 static bool isCheckingFinish = false;
 static float finishCheckStartDist = 0;
@@ -11,8 +10,7 @@ static float finishCheckStartDist = 0;
 FinishState checkFinishStatus() {
     if (!USE_START_FINISH) return NOT_FINISH;
 
-    // Ziet de robot nu de volledige dwarsbalk?
-    bool seesFullBlack = (currentSensors.sensorMask == 0b11111111);
+    bool seesFullBlack = (currentSensors.sensorMask == 0xFF);
 
     if (seesFullBlack) {
         if (!isCheckingFinish) {
@@ -25,12 +23,10 @@ FinishState checkFinishStatus() {
             return FINISH_CONFIRMED; 
         }
         
-        // Tijdens checken rijden we stabiel door
         setMotorSpeed(BASE_SPEED_MAPPING, BASE_SPEED_MAPPING);
         return CHECKING_FINISH;
     } 
     else {
-        // We zien geen zwart meer. Waren we aan het checken? Dan was het een kruispunt!
         if (isCheckingFinish) {
             isCheckingFinish = false; 
             return INTERSECTION_DETECTED; 
