@@ -347,48 +347,60 @@ case COUNTDOWN:
 
 case MAPPING: {
     static unsigned long whiteTime = 0; 
-    static int lastSideSeen = 0; // -1 voor links, 1 voor rechts, 0 voor midden
+    static int lastSideSeen = 0; 
 
-    // --- 1. SENSOR DATA PRINTEN ---
+    // --- 1. SENSOR DATA PRINTEN (Voor debugging) ---
     static unsigned long lastPrint = 0;
     if (millis() - lastPrint > 150) {
         Serial.print("Sensoren: [");
-        for (int i = 7; i >= 0; i--) {
-            Serial.print((currentSensors.sensorMask & (1 << i)) ? "X" : "_");
-        }
+        for (int i = 7; i >= 0; i--) Serial.print((currentSensors.sensorMask & (1 << i)) ? "X" : "_");
         Serial.printf("] | Driven: %5.1f cm | ", currentSensors.distanceDriven);
-        if (finishPaused) Serial.print("STATUS: PAUZE");
-        else if (whiteTime > 0) Serial.print("STATUS: ZOEKEND");
-        else Serial.print("STATUS: VOLGEN");
-        Serial.println();
+        Serial.println(whiteTime > 0 ? "STATUS: ZOEKEND" : "STATUS: VOLGEN");
         lastPrint = millis();
     }
 
-    // --- 2. UPDATE GEHEUGEN (Welke kant zagen we laatst?) ---
-    if (currentSensors.sensorMask & 0b11100000) lastSideSeen = -1; // Links gezien
-    else if (currentSensors.sensorMask & 0b00000111) lastSideSeen = 1; // Rechts gezien
-    else if (currentSensors.sensorMask & 0b00011000) lastSideSeen = 0; // Midden gezien
+    // --- 2. UPDATE GEHEUGEN ---
+    if (currentSensors.sensorMask & 0b11100000) lastSideSeen = -1; 
+    else if (currentSensors.sensorMask & 0b00000111) lastSideSeen = 1; 
+    else if (currentSensors.sensorMask & 0b00011000) lastSideSeen = 0; 
 
-    // --- 3. ACTIES ---
-
-    // A. Finish & Kruispunt
+    // --- 3. KRUISPUNT & T-SPLITSING LOGICA (Prioriteit 1) ---
     FinishState finishStatus = checkFinishStatus();
     if (finishStatus == FINISH_CONFIRMED || finishStatus == CHECKING_FINISH) break;
 
     if (finishStatus == INTERSECTION_DETECTED) {
         whiteTime = 0; 
-        Serial.println(">>> T-SPLITSING: Geforceerd LINKS <<<");
-        uint8_t branches = probeAvailableBranches();
-        setMotorSpeed(-BASE_SPEED_TURNS, BASE_SPEED_TURNS);
-        delay(250); 
-        unsigned long turnStart = millis();
-        while (!currentSensors.lineDetected && millis() - turnStart < 2000) { delay(10); }
+        uint8_t branches = probeAvailableBranches(); // Kijkt wat er allemaal zwart is
+        uint8_t targetDir = chooseLeftHandBranch(branches); // Kiest ALTIJD links indien mogelijk
+
+        if (targetDir == BRANCH_LEFT) {
+            Serial.println(">>> T-SPLITSING: Linksaf volgens regel <<<");
+            setMotorSpeed(-BASE_SPEED_TURNS, BASE_SPEED_TURNS);
+            delay(300); 
+            unsigned long turnStart = millis();
+            while (!currentSensors.lineDetected && millis() - turnStart < 2000) {
+                // LET OP: HIER MOET JE SENSOR-UITLEES-REGEL STAAN!
+                delay(10);
+            }
+        } 
+        else if (targetDir == BRANCH_RIGHT) {
+            Serial.println(">>> T-SPLITSING: Geen links, dus Rechtsaf <<<");
+            setMotorSpeed(BASE_SPEED_TURNS, -BASE_SPEED_TURNS);
+            delay(300);
+            unsigned long turnStart = millis();
+            while (!currentSensors.lineDetected && millis() - turnStart < 2000) {
+                // LET OP: HIER MOET JE SENSOR-UITLEES-REGEL STAAN!
+                delay(10);
+            }
+        }
+        // Bij BRANCH_STRAIGHT doet hij niets, PID doet de rest.
+
         stopMotors();
-        saveIntersectionNode(currentSensors.distanceDriven, BRANCH_LEFT, branches);
+        saveIntersectionNode(currentSensors.distanceDriven, targetDir, branches);
         break;
     }
 
-    // B. Scherpe Bocht Reflex
+    // --- 4. SCHERPE BOCHT REFLEX (90° hoeken zonder balk) ---
     int sharpTurn = detectSharpTurnDirection(currentSensors.sensorMask);
     if (sharpTurn != 0) {
         whiteTime = 0; 
@@ -397,39 +409,31 @@ case MAPPING: {
         break;
     }
 
-    // C. Lijnvolgen of Dead-end/Bocht Zoeken
+    // --- 5. LIJNVOLGEN OF DEAD-END ---
     if (currentSensors.lineDetected) {
         whiteTime = 0; 
         calculatePID();
     } else {
-        // LIJN KWIJT: Wat was het laatste dat we zagen?
         if (whiteTime == 0) whiteTime = millis();
 
         if (lastSideSeen == -1) {
-            // We zagen laatst links iets -> Blijf links draaien om de bocht te vangen
-            Serial.println(">>> BOCHT ZOEKEN: Links <<<");
-            setMotorSpeed(-BASE_SPEED_TURNS, BASE_SPEED_TURNS);
+            setMotorSpeed(-BASE_SPEED_TURNS, BASE_SPEED_TURNS); // Links zoeken
         } 
         else if (lastSideSeen == 1) {
-            // We zagen laatst rechts iets -> Blijf rechts draaien
-            Serial.println(">>> BOCHT ZOEKEN: Rechts <<<");
-            setMotorSpeed(BASE_SPEED_TURNS, -BASE_SPEED_TURNS);
+            setMotorSpeed(BASE_SPEED_TURNS, -BASE_SPEED_TURNS); // Rechts zoeken
         }
-        else {
-            // Het was in het midden kwijt -> Waarschijnlijk echt een Dead-end
-            if (millis() - whiteTime > 600) { 
-                Serial.println(">>> DEAD-END BEVESTIGD: 180° <<<");
-                markLastNodeDeadEnd();
-                performDeadEndRecovery();
-                whiteTime = 0;
-                break;
-            } else {
-                setMotorSpeed(BASE_SPEED_MAPPING - 15, BASE_SPEED_MAPPING - 15);
-            }
+        else if (millis() - whiteTime > 600) { 
+            Serial.println(">>> DEAD-END BEVESTIGD <<<");
+            markLastNodeDeadEnd();
+            performDeadEndRecovery(); // Zorg dat deze functie in je main staat!
+            whiteTime = 0;
+            break;
+        } else {
+            setMotorSpeed(BASE_SPEED_MAPPING - 15, BASE_SPEED_MAPPING - 15);
         }
     }
 
-    // D. Opslaan
+    // --- 6. OPSLAAN ---
     if (currentSensors.lineDetected) {
         float distSinceLastSave = abs(currentSensors.distanceDriven - lastSavedDistance);
         if (distSinceLastSave >= NODE_SAVE_DISTANCE) {
@@ -438,8 +442,16 @@ case MAPPING: {
             lastSavedDistance = currentSensors.distanceDriven;
         }
     }
-  }
-  break;
+}
+break;
+
+
+
+
+
+
+
+
 
 
   
