@@ -13,73 +13,96 @@ extern float lastSavedDistance;
 extern void saveIntersectionNode(float distance, uint8_t branchDirection, uint8_t branchMask);
 extern void markLastNodeDeadEnd();
 
+extern RobotState currentState;
+
 // ============================================================================
 // DEAD-END RECOVERY - SMOOTH 180° TURN
 // ============================================================================
 
 void performSmoothDeadEndRecovery() {
-    Serial.println("[NAVIGATION] Dead-end gedetecteerd, vloeiende 180° draai starten...");
-    
-    // Stop motors first
+    Serial.println("[NAVIGATION] Dead-end: Strakke 180 graden draai!");
     stopMotors();
-    delay(50);
-    
-    // Begin with a smooth 180° turn
-    // Use a gradual speed curve instead of sudden full speed
-    const int TURN_SPEED_START = 80;
-    const int TURN_SPEED_MAX = 140;
-    unsigned long turnStartTime = millis();
-    unsigned long turnTimeout = 3500; // Maximum 3.5 seconds for the turn
-    
-    // Sensor-based exit: stop when middle sensors detect the line
-    while (millis() - turnStartTime < turnTimeout) {
-        // Check if line is detected in the middle (after 180° turn)
+    delay(200);
+
+    // 1. BLINDE FASE (Kom van de lijn af)
+    // We draaien altijd strak over 1 kant (Links achteruit, Rechts vooruit)
+    setMotorSpeed(-BASE_SPEED_TURNS, BASE_SPEED_TURNS);
+    delay(400); // Gedurende 400ms negeren we de sensoren totaal
+
+    // 2. ZOEK FASE
+    unsigned long start = millis();
+    while (millis() - start < 3000) {
+        // Blijf strak draaien
+        setMotorSpeed(-BASE_SPEED_TURNS, BASE_SPEED_TURNS);
+        
+        // Zodra de MIDDELSTE sensoren de lijn weer strak zien, STOP.
         if (currentSensors.sensorMask & MID_SENSOR_MASK) {
-            Serial.println("[NAVIGATION] Lijn herontdekt na 180° draai!");
-            stopMotors();
-            delay(100);
-            return;
+            Serial.println("[NAVIGATION] Lijn weer in het vizier!");
+            break;
         }
-        
-        // Smooth acceleration during the turn
-        unsigned long elapsed = millis() - turnStartTime;
-        float progress = (float)elapsed / turnTimeout;
-        
-        // Ramp up speed smoothly
-        int speed;
-        if (progress < 0.3f) {
-            speed = TURN_SPEED_START + (int)((TURN_SPEED_MAX - TURN_SPEED_START) * (progress / 0.3f));
-        } else if (progress > 0.8f) {
-            speed = TURN_SPEED_MAX - (int)((TURN_SPEED_MAX - TURN_SPEED_START) * ((progress - 0.8f) / 0.2f));
-        } else {
-            speed = TURN_SPEED_MAX;
-        }
-        
-        // Left turn (counterclockwise when viewed from above)
-        setMotorSpeed(-speed, speed);
         delay(5);
     }
     
-    // Timeout reached, stop anyway
     stopMotors();
-    Serial.println("[NAVIGATION] Timeout: 180° draai voltooid zonder lijn-detectie");
     delay(100);
 }
+
+
 
 // ============================================================================
 // OBSTACLE AVOIDANCE - SMOOTH ARC MANOEUVRE
 // ============================================================================
 
 void executeArcManoeuvre() {
-    Serial.println("[NAVIGATION] Arc-manoeuvre starten rond obstakel...");
-    
-    // Phase 1: Drive right in a smooth arc (already exists in main.cpp)
-    // This is handled by handleObstacleAvoidance() - we just need to ensure
-    // it uses smooth transitions instead of hard speed changes
-    
-    // The arc logic is already in handleObstacleAvoidance()
-    // This function serves as documentation/wrapper
+    Serial.println("[NAVIGATION] OBSTAKEL: Start veilige boog linksom!");
+    stopMotors();
+    delay(200);
+
+    // STAP 1: Draai naar LINKS (weg van de lijn)
+    // We draaien op de plaats om de neus in de juiste richting te zetten
+    setMotorSpeed(-BASE_SPEED_TURNS, BASE_SPEED_TURNS);
+    delay(350); // Pas dit aan: hij moet ongeveer 45 graden naar links wijzen
+
+    // STAP 2: Rij RECHTDOOR (om naast/voorbij het object te komen)
+    // Dit zorgt ervoor dat de zijkant van de robot het object niet raakt
+    setMotorSpeed(BASE_SPEED_MAPPING + 20, BASE_SPEED_MAPPING + 20);
+    delay(700); // <-- VERHOOG DEZE delay als hij nog steeds de zijkant raakt
+
+    // STAP 3: DRAAIEN EN VOORUITRIJDEN TEGELIJK (De "Zoek-boog")
+    // We maken een flauwe bocht naar rechts terwijl we snelheid houden
+    Serial.println("[NAVIGATION] Zoeken naar lijn met voorwaartse boog...");
+    unsigned long searchStart = millis();
+    bool onLine = false;
+
+    while (millis() - searchStart < 5000) { // Maximaal 5 seconden zoeken
+        // We laten de linkermotor veel sneller draaien dan de rechter
+        // Hierdoor rijdt hij vooruit maar buigt hij langzaam naar rechts
+        int leftSpeed = BASE_SPEED_MAPPING + 45; 
+        int rightSpeed = BASE_SPEED_MAPPING - 25; // Rechterwiel draait langzaam vooruit
+        
+        setMotorSpeed(leftSpeed, rightSpeed);
+
+        // Check of we de lijn raken met de sensoren
+        // We kijken vooral of de rechter- of middensensoren de lijn raken
+        if (currentSensors.sensorMask != 0x00) { 
+            Serial.println("[NAVIGATION] Lijn gedetecteerd tijdens boog!");
+            onLine = true;
+            break;
+        }
+        delay(10);
+    }
+
+    if (!onLine) {
+        Serial.println("[NAVIGATION] Lijn niet gevonden, stop voor veiligheid.");
+        stopMotors();
+    } else {
+        // Even kort de andere kant op sturen om recht op de lijn te komen
+        setMotorSpeed(-20, 20); 
+        delay(50);
+    }
 }
+
+
 
 void searchLineAfterObstacle() {
     Serial.println("[NAVIGATION] Zoeken naar lijn na obstakel...");
@@ -107,67 +130,81 @@ void searchLineAfterObstacle() {
 // ============================================================================
 
 uint8_t handleIntersectionLeftHandRule() {
-    Serial.println("[NAVIGATION] Kruispunt gedetecteerd - linkerhandregel toepassing");
+    Serial.println("[NAVIGATION] Kruispunt: Linkerhandregel toepassen...");
     
-    // Probe available branches
+    // Scan goed over het kruispunt (geeft de sensoren de tijd om de zijlijnen te zien)
     uint8_t branches = probeAvailableBranchesImproved();
-    
-    // Apply strict left-hand rule
     uint8_t targetDir = BRANCH_NONE;
-    if (branches & BRANCH_MASK_LEFT) {
+
+    // We kijken heel specifiek naar de uiterste linker sensoren (mask 0b11000000)
+    // Dit voorkomt dat een wiebelende PID een 'linker afslag' triggert.
+    if ((branches & BRANCH_MASK_LEFT) || (currentSensors.sensorMask & 0b11000000)) {
         targetDir = BRANCH_LEFT;
-        Serial.println("[NAVIGATION] Kruispunt: LINKS gekozen (linkerhandregel)");
-    } else if (branches & BRANCH_MASK_STRAIGHT) {
+        Serial.println("[NAVIGATION] Besluit: LINKS (Prioriteit 1)");
+    } 
+    else if (branches & BRANCH_MASK_STRAIGHT) {
         targetDir = BRANCH_STRAIGHT;
-        Serial.println("[NAVIGATION] Kruispunt: RECHTDOOR gekozen");
-    } else if (branches & BRANCH_MASK_RIGHT) {
+        Serial.println("[NAVIGATION] Besluit: RECHTDOOR (Prioriteit 2)");
+    } 
+    else if (branches & BRANCH_MASK_RIGHT) {
         targetDir = BRANCH_RIGHT;
-        Serial.println("[NAVIGATION] Kruispunt: RECHTS gekozen");
+        Serial.println("[NAVIGATION] Besluit: RECHTS (Prioriteit 3)");
     }
-    
-    // Execute the turn
+
+    // UITVOERING
     if (targetDir == BRANCH_LEFT) {
-        if (turnUntilLineDetected(-1)) {
-            Serial.println("[NAVIGATION] Linkerbochtdraai voltooid");
-        }
+        turnUntilLineDetected(-1); // -1 is links
     } else if (targetDir == BRANCH_RIGHT) {
-        // Only turn right if there's NO middle line (left-hand rule compliance)
-        if (!(currentSensors.sensorMask & MID_SENSOR_MASK)) {
-            if (turnUntilLineDetected(1)) {
-                Serial.println("[NAVIGATION] Rechterbochtdraai voltooid");
-            }
-        }
+        turnUntilLineDetected(1);  // 1 is rechts
+    } else if (targetDir == BRANCH_STRAIGHT) {
+        // Belangrijk: Rij agressief door om de zijlijnen te negeren
+        setMotorSpeed(BASE_SPEED_MAPPING, BASE_SPEED_MAPPING);
+        delay(300); 
     }
-    
+
     return targetDir;
 }
 
+
+
 bool turnUntilLineDetected(int turnDirection, unsigned long timeoutMs) {
     unsigned long turnStartTime = millis();
-    int turnSpeed = BASE_SPEED_TURNS;
+    
+    // We verlagen de snelheid een klein beetje voor meer grip en precisie
+    int turnSpeed = BASE_SPEED_TURNS - 5; 
+    
+    // Belangrijk: De MID_SENSOR_MASK moet idealiter 0b00011000 zijn
+    // zodat de robot kaarsrecht op de lijn stopt.
     
     while (millis() - turnStartTime < timeoutMs) {
-        // Check if middle sensors detect the line
-        if (currentSensors.sensorMask & MID_SENSOR_MASK) {
+        // 1. Check of we de lijn gevonden hebben met de middelste sensoren
+        if (currentSensors.sensorMask & 0b00011000) { 
+            // DIRECTE REM: Zet motoren even kort in reverse voor een harde stop
+            if (turnDirection < 0) setMotorSpeed(turnSpeed, -turnSpeed);
+            else setMotorSpeed(-turnSpeed, turnSpeed);
+            
+            delay(15); // Korte 'tegendruk' om uitbollen te stoppen
             stopMotors();
+            
+            Serial.println("[NAV] Lijn gevonden en gestopt.");
             return true;
         }
         
-        // Continue turning in the specified direction
+        // 2. Blijf draaien
         if (turnDirection < 0) {
-            // Left turn
-            setMotorSpeed(-turnSpeed, turnSpeed);
+            setMotorSpeed(-turnSpeed, turnSpeed); // Links
         } else {
-            // Right turn
-            setMotorSpeed(turnSpeed, -turnSpeed);
+            setMotorSpeed(turnSpeed, -turnSpeed); // Rechts
         }
-        delay(5);
+        
+        // Kleine delay voor stabiliteit van de sensorlezingen
+        delay(1); 
     }
     
     stopMotors();
+    Serial.println("[NAV] Timeout: Lijn niet gevonden.");
     return false;
 }
-
 // ============================================================================
 // SPEEDRUN NAVIGATION - MAP-BASED ROUTE SELECTION
 // ============================================================================
@@ -263,19 +300,25 @@ bool isDeadEndBranch(int nodeIndex, uint8_t branchDirection) {
 // ============================================================================
 
 uint8_t probeAvailableBranchesImproved() {
-    // Drive forward slightly to probe the intersection
-    setMotorSpeed(BASE_SPEED_MAPPING, BASE_SPEED_MAPPING);
-    delay(INTERSECTION_PROBE_MS);
+    uint8_t foundBranches = 0;
+    unsigned long probeStart = millis();
     
-    // Read the available branches
-    uint8_t branches = 0;
-    if (currentSensors.sensorMask & LEFT_SIDE_MASK) branches |= BRANCH_MASK_LEFT;
-    if (currentSensors.sensorMask & MID_SENSOR_MASK) branches |= BRANCH_MASK_STRAIGHT;
-    if (currentSensors.sensorMask & RIGHT_SIDE_MASK) branches |= BRANCH_MASK_RIGHT;
+    // Rij langzaam vooruit en scan continu gedurende 200ms
+    // Zo mist hij nooit een zijlijn die net iets verderop ligt
+    setMotorSpeed(BASE_SPEED_MAPPING - 10, BASE_SPEED_MAPPING - 10);
+    
+    while (millis() - probeStart < 200) {
+        if (currentSensors.sensorMask & LEFT_SIDE_MASK) foundBranches |= BRANCH_MASK_LEFT;
+        if (currentSensors.sensorMask & MID_SENSOR_MASK) foundBranches |= BRANCH_MASK_STRAIGHT;
+        if (currentSensors.sensorMask & RIGHT_SIDE_MASK) foundBranches |= BRANCH_MASK_RIGHT;
+        delay(5);
+    }
     
     stopMotors();
-    return branches;
+    return foundBranches;
 }
+
+
 
 bool isDeadEndPattern(uint8_t sensorMask) {
     // Dead-end is when only middle sensors see the line, and all sides are white
@@ -324,10 +367,11 @@ void executeMappingState() {
         lastPrint = millis();
     }
 
-    // --- 2. OBSTACLE DETECTION (WAIT MODE) ---
-    if (currentSensors.distance > 1 && currentSensors.distance < 15) {
-        stopMotors();
-        Serial.println("[MAPPING] Obstakel gezien: wachten...");
+    // --- 2. OBSTACLE DETECTION ---
+    if (currentSensors.distance > 1.0 && currentSensors.distance < DISTANCE_THRESHOLD) {
+        Serial.println("[MAPPING] Obstakel gezien: start boog!");
+        executeArcManoeuvre(); // Nu voert hij eindelijk de boog uit in mapping!
+        actionTimer = millis();
         return;
     }
 
@@ -346,50 +390,69 @@ void executeMappingState() {
         finishDetectedTime = 0; 
     }
 
-    // --- 4. INTERSECTION & SHARP TURN DETECTION ---
+    // --- 4. SNELLE INTERSECTION & SHARP TURN DETECTION ---
     FinishState finishStatus = checkFinishStatus();
-    bool midLine = (currentSensors.sensorMask & MID_SENSOR_MASK);
-    
+    uint8_t snapMask = currentSensors.sensorMask; 
     int sharpTurnDir = 0;
-    bool isSharpTurn = detectSharpTurnGap(currentSensors.sensorMask, sharpTurnDir);
+    bool isSharpTurn = detectSharpTurnGap(snapMask, sharpTurnDir);
 
-    if ((finishStatus == INTERSECTION_DETECTED || isSharpTurn) && (millis() - actionTimer > 600)) {
+    if ((finishStatus == INTERSECTION_DETECTED || snapMask == 0xFF || isSharpTurn) && (millis() - actionTimer > 600)) {
         
-        // Move forward slightly to align for the turn
-        setMotorSpeed(BASE_SPEED_MAPPING, BASE_SPEED_MAPPING);
-        delay(45); 
-        
-        // Handle sharp turns
-        if (isSharpTurn && !midLine) {
-            Serial.printf("[MAPPING] Scherpe bocht gedetecteerd: richting=%d\n", sharpTurnDir);
-            
-            if (sharpTurnDir < 0) {
-                // Sharp left
-                if (turnUntilLineDetected(-1)) {
-                    Serial.println("[MAPPING] Scherpe linkerbochtdraai voltooid");
-                    saveIntersectionNode(currentSensors.distanceDriven, BRANCH_LEFT, BRANCH_MASK_LEFT);
-                }
-            } else {
-                // Sharp right
-                if (turnUntilLineDetected(1)) {
-                    Serial.println("[MAPPING] Scherpe rechterbochtdraai voltooid");
-                    saveIntersectionNode(currentSensors.distanceDriven, BRANCH_RIGHT, BRANCH_MASK_RIGHT);
-                }
-            }
-        } else if (finishStatus == INTERSECTION_DETECTED) {
-            // Regular intersection: apply left-hand rule
-            uint8_t targetDir = handleIntersectionLeftHandRule();
-            if (targetDir != BRANCH_NONE) {
-                uint8_t branches = probeAvailableBranchesImproved();
-                saveIntersectionNode(currentSensors.distanceDriven, targetDir, branches);
+        // STAP A: QUICK FINISH CHECK
+        if (snapMask == 0xFF) {
+            delay(150); 
+            if (currentSensors.sensorMask == 0xFF) {
+                Serial.println("[MAPPING] >>> FINISH BEVESTIGD <<<");
+                stopMotors();
+                extern RobotState currentState;
+                currentState = IDLE; 
+                return;
             }
         }
+
+        // STAP B: DE BESLISSING (Gefinetuned voor 90 graden)
         
+        // 1. LINKS
+        if (snapMask & 0b11100000) { 
+            Serial.println("[MAPPING] Besluit: LINKS");
+            saveIntersectionNode(currentSensors.distanceDriven, BRANCH_LEFT, snapMask | BRANCH_MASK_STRAIGHT);
+            
+            // KORTERE KICKSTART: Voorkomt doordraaien
+            setMotorSpeed(-BASE_SPEED_TURNS, BASE_SPEED_TURNS); 
+            delay(180); // <--- Verlaagd van 350 naar 180ms
+            
+            turnUntilLineDetected(-1); 
+        } 
+        
+        // 2. RECHTDOOR
+        else if (snapMask & 0b00011000) {
+            Serial.println("[MAPPING] Besluit: RECHTDOOR");
+            saveIntersectionNode(currentSensors.distanceDriven, BRANCH_STRAIGHT, snapMask);
+            setMotorSpeed(BASE_SPEED_MAPPING + 10, BASE_SPEED_MAPPING + 10);
+            delay(150);
+        }
+        
+        // 3. RECHTS
+        else if (snapMask & 0b00000111) {
+            Serial.println("[MAPPING] Besluit: RECHTS");
+            saveIntersectionNode(currentSensors.distanceDriven, BRANCH_RIGHT, snapMask);
+            
+            setMotorSpeed(BASE_SPEED_TURNS, -BASE_SPEED_TURNS);
+            delay(180); // <--- Verlaagd van 350 naar 180ms
+            
+            turnUntilLineDetected(1);
+        }
+        
+        // 4. Fallback scherpe bocht
+        else if (isSharpTurn) {
+            turnUntilLineDetected(sharpTurnDir);
+        }
+
         whiteTime = 0;
         actionTimer = millis();
         return;
     }
-
+    
     // --- 5. LINE FOLLOWING OR DEAD-END SEARCH ---
     if (currentSensors.lineDetected) {
         whiteTime = 0; 
@@ -438,22 +501,36 @@ void executeSpeedrunState() {
     // This function focuses on navigation only
     
     // --- 2. MAP-BASED INTERSECTION HANDLING ---
-    float currentDist = currentSensors.distanceDriven;
+    static unsigned long speedrunActionTimer = 0;
+    FinishState finishStatus = checkFinishStatus();
     int sharpTurnDir = 0;
     bool isSharpTurn = detectSharpTurnGap(currentSensors.sensorMask, sharpTurnDir);
     
-    // At intersections, use map to decide which way to go
-    if (isSharpTurn && (currentSensors.sensorMask & MID_SENSOR_MASK) == 0) {
-        // This is an intersection - choose branch based on map
-        uint8_t chosenBranch = selectSpeedrunBranch(currentDist);
+    if ((finishStatus == INTERSECTION_DETECTED || isSharpTurn) && (millis() - speedrunActionTimer > 600)) {
         
-        if (chosenBranch == BRANCH_LEFT && sharpTurnDir < 0) {
-            Serial.printf("[SPEEDRUN] Sharp intersection: LINKS (map-gebaseerd)\n");
-        } else if (chosenBranch == BRANCH_RIGHT && sharpTurnDir > 0) {
-            Serial.printf("[SPEEDRUN] Sharp intersection: RECHTS (map-gebaseerd)\n");
-        } else if (chosenBranch == BRANCH_STRAIGHT) {
-            Serial.printf("[SPEEDRUN] Sharp intersection: RECHTDOOR (map-gebaseerd)\n");
+        // Check de opgeslagen map voor deze afstand
+        uint8_t chosenBranch = selectSpeedrunBranch(currentSensors.distanceDriven);
+        
+        if (chosenBranch == BRANCH_LEFT) {
+            Serial.println("[SPEEDRUN] Map zegt: LINKS");
+            turnUntilLineDetected(-1);
+        } 
+        else if (chosenBranch == BRANCH_RIGHT) {
+            Serial.println("[SPEEDRUN] Map zegt: RECHTS");
+            turnUntilLineDetected(1);
+        } 
+        else if (chosenBranch == BRANCH_STRAIGHT) {
+            Serial.println("[SPEEDRUN] Map zegt: RECHTDOOR");
+            setMotorSpeed(BASE_SPEED_MAPPING, BASE_SPEED_MAPPING);
+            delay(250); // Hard over het kruispunt heen rijden
+        } 
+        else if (isSharpTurn) {
+            Serial.println("[SPEEDRUN] Scherpe bocht fallback");
+            turnUntilLineDetected(sharpTurnDir);
         }
+
+        speedrunActionTimer = millis();
+        return;
     }
 
     // --- 3. EXECUTE SPEEDRUN CALCULATION (From Logic.cpp) ---
@@ -461,12 +538,13 @@ void executeSpeedrunState() {
     calculateSpeedrun();
 
     // --- 4. DISTANCE-BASED FINISH FALLBACK ---
-    // If we go beyond the mapped distance without a line, assume finish
     if (mapIndex > 0) {
         float finalMapDistance = trackMap[mapIndex - 1].distance;
-        if (currentDist > finalMapDistance + 30.0 && !currentSensors.lineDetected) {
+        // Gebruik direct currentSensors.distanceDriven in plaats van currentDist
+        if (currentSensors.distanceDriven > finalMapDistance + 30.0 && !currentSensors.lineDetected) {
             Serial.println("[SPEEDRUN] Beyond map + 30cm without line: Auto-finish");
-            // Signal to main.cpp to handle the state change
+            // Optioneel: zet de robot hier ook echt stil of zet de state op IDLE
+            // stopMotors(); 
         }
     }
 }

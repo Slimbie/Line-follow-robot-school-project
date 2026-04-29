@@ -62,21 +62,21 @@ inline int detectSharpTurnDirection(uint8_t mask) {
 inline bool isFullBlack() {
     return currentSensors.sensorMask == 0xFF;
 }
-
+/*
 inline uint8_t getBranchMask(uint8_t mask) {
     uint8_t branches = 0;
     if (mask & LEFT_SIDE_MASK) branches |= BRANCH_MASK_LEFT;
     if (mask & MID_SENSOR_MASK) branches |= BRANCH_MASK_STRAIGHT;
     if (mask & RIGHT_SIDE_MASK) branches |= BRANCH_MASK_RIGHT;
     return branches;
-}
-
+}*/
+/*
 inline uint8_t chooseLeftHandBranch(uint8_t branches) {
     if (branches & BRANCH_MASK_LEFT) return BRANCH_LEFT;
     if (branches & BRANCH_MASK_STRAIGHT) return BRANCH_STRAIGHT;
     if (branches & BRANCH_MASK_RIGHT) return BRANCH_RIGHT;
     return BRANCH_NONE;
-}
+}*/
 
 inline uint8_t chooseFallbackBranch(uint8_t branches) {
     if (branches & BRANCH_MASK_STRAIGHT) return BRANCH_STRAIGHT;
@@ -136,14 +136,14 @@ void markLastNodeDeadEnd() {
                       idx, trackMap[idx].branchDirection);
     }
 }
-
+/*
 uint8_t probeAvailableBranches() {
     setMotorSpeed(BASE_SPEED_MAPPING, BASE_SPEED_MAPPING);
     delay(INTERSECTION_PROBE_MS);
     uint8_t branches = getBranchMask(currentSensors.sensorMask);
     stopMotors();
     return branches;
-}
+}*/
 
 bool obstacleInFront() {
   return currentSensors.distance > 1.0 && currentSensors.distance < DISTANCE_THRESHOLD;
@@ -167,7 +167,7 @@ bool obstacleStillDetected() {
   obstacleClearCount++;
   return obstacleClearCount < OBSTACLE_CLEAR_COUNT;
 }
-
+/*
 void beginObstacleAvoidance(RobotState fromState) {
   previousState = fromState;
   currentState = OBSTACLE_STOP;
@@ -175,8 +175,8 @@ void beginObstacleAvoidance(RobotState fromState) {
   obstacleStartTime = millis();
   obstacleStartDistance = currentSensors.distanceDriven;
   Serial.println("Obstakel gedetecteerd! Obstakeldrijving start.");
-}
-
+}*/
+/*
 void handleObstacleAvoidance() {
   bool obstacleStillSeen = obstacleStillDetected();
   bool lineVisible = currentSensors.lineDetected;
@@ -269,7 +269,7 @@ void handleObstacleAvoidance() {
                      6); // Type 6 = Obstacle
   }
 }
-
+*/
 void setup()
 {
   Serial.begin(115200);
@@ -400,20 +400,27 @@ case MAPPING:
 
 case SPEEDRUN:
     if (obstacleConfirmed()) {
-        beginObstacleAvoidance(currentState);
+        Serial.println("[SPEEDRUN] OBSTAKEL DETECTIE!");
+        executeArcManoeuvre(); // Gebruik direct de nieuwe, blokkerende boog-functie!
+        
+        // Reset de tellers na de manoeuvre
+        obstacleDetectCount = 0; 
+        obstacleClearCount = 0;
         break;
     }
 
     {
         FinishState finishStatus = checkFinishStatus();
-        if (finishStatus == CHECKING_FINISH) {
-            break;
-        }
         if (finishStatus == FINISH_CONFIRMED) {
-            Serial.println("[SPEEDRUN] Finish bereikt! Stop.");
-            currentState = IDLE;
+            Serial.println("[SPEEDRUN] Finish! Pauzeren...");
             stopMotors();
-            break;
+            // In plaats van currentState = IDLE, wachten we gewoon
+            // De robot stopt, maar blijft in de loop tot de balk weg is
+            while(currentSensors.sensorMask == 0xFF) {
+                stopMotors();
+                delay(10);
+            }
+            Serial.println("[SPEEDRUN] Finish balk weg, verder gaan.");
         }
     }
 
@@ -429,10 +436,14 @@ case SPEEDRUN:
         }
     }
     break;
-
+/*
   case OBSTACLE_STOP:
-    handleObstacleAvoidance();
+    // Gebruik de nieuwe vloeiende boog uit Navigation
+    executeArcManoeuvre(); 
+    // Na de boog keren we terug naar de vorige modus
+    currentState = previousState;
     break;
+*/
 
  case DATA_DUMP:
     stopMotors();

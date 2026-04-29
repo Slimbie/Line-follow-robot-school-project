@@ -17,7 +17,7 @@
 #define NODE_SAVE_DISTANCE 5.0
 #define INTERSECTION_PROBE_MS 120
 #define TURN_180_DURATION_MS 850
-#define SPEEDRUN_LOOKAHEAD_POINTS 8
+#define SPEEDRUN_LOOKAHEAD_POINTS 12
 #define ZIGZAG_THRESHOLD 12.0
 #define SHARP_TURN_THRESHOLD 25.0
 #define BRANCH_MASK_LEFT 0x01
@@ -53,7 +53,7 @@ const int sensorPinnen[SENSOR_COUNT] = {32, 33, 34, 35, 36, 39, 25, 26};
 // --- Ultrasoon ---
 #define TRIG_PIN 5
 #define ECHO_PIN 18
-#define DISTANCE_THRESHOLD 5.0 // cm
+#define DISTANCE_THRESHOLD 15.0 // cm
 
 // --- Motoren (L298N / OT2065) ---
 // Links
