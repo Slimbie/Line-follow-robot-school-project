@@ -5,6 +5,7 @@
 #include "Logic.h"
 #include "Mapping.h"
 #include "StartStop.h"
+#include "Navigation.h"
 
 
 //begin variabelen
@@ -89,12 +90,7 @@ inline bool onlyMiddleLastSeen(uint8_t mask) {
 }
 
 void performDeadEndRecovery() {
-    Serial.println("Dead-end gedetecteerd, 180 graden draaien.");
-    stopMotors();
-    setMotorSpeed(120, -120);
-    delay(TURN_180_DURATION_MS);
-    stopMotors();
-    delay(120);
+    performSmoothDeadEndRecovery();
 }
 
 void saveIntersectionNode(float distance, uint8_t branchDirection, uint8_t branchMask) {
@@ -114,11 +110,30 @@ void markLastNodeDeadEnd() {
     int idx = getLastNodeIndex(currentSensors.distanceDriven);
     if (idx >= 0) {
         trackMap[idx].isDeadEnd = true;
-        if (trackMap[idx].branchDirection == BRANCH_LEFT) {
-            trackMap[idx].branchDirection = chooseFallbackBranch(trackMap[idx].availableBranches & ~BRANCH_MASK_LEFT);
+        
+        // Find the direction we came from (the one that was dead-end)
+        // and select a fallback direction
+        uint8_t availableDirs = trackMap[idx].availableBranches;
+        uint8_t currentDir = trackMap[idx].branchDirection;
+        
+        // Remove the dead-end direction from available branches
+        uint8_t validDirs = availableDirs;
+        if (currentDir == BRANCH_LEFT) validDirs &= ~BRANCH_MASK_LEFT;
+        else if (currentDir == BRANCH_STRAIGHT) validDirs &= ~BRANCH_MASK_STRAIGHT;
+        else if (currentDir == BRANCH_RIGHT) validDirs &= ~BRANCH_MASK_RIGHT;
+        
+        // Choose fallback: prioritize straight > right > left
+        if (validDirs & BRANCH_MASK_STRAIGHT) {
+            trackMap[idx].branchDirection = BRANCH_STRAIGHT;
+        } else if (validDirs & BRANCH_MASK_RIGHT) {
+            trackMap[idx].branchDirection = BRANCH_RIGHT;
+        } else if (validDirs & BRANCH_MASK_LEFT) {
+            trackMap[idx].branchDirection = BRANCH_LEFT;
         }
+        
         trackMap[idx].type = 6;
-        Serial.printf("Node %d als doodlopend gemarkeerd, nieuwe richting %d\n", idx, trackMap[idx].branchDirection);
+        Serial.printf("[MAPPING] Node %d als doodlopend gemarkeerd, nieuwe richting: %d\n", 
+                      idx, trackMap[idx].branchDirection);
     }
 }
 
@@ -168,48 +183,70 @@ void handleObstacleAvoidance() {
   int baseSpeed = 55;
   float passedDistance = currentSensors.distanceDriven - obstacleStartDistance;
 
-  Serial.printf("[OBSTACLE] afstand=%.1f cm, line=%d, phase=%d, passed=%.1f\n", currentSensors.distance, lineVisible, obstaclePhase, passedDistance);
+  Serial.printf("[OBSTACLE] Afstand=%.1f cm, Lijn=%d, Fase=%d, Voorbij=%.1f\n", 
+                currentSensors.distance, lineVisible, obstaclePhase, passedDistance);
 
   if (obstacleStillSeen) {
+    // Phase 1: Drive RIGHT in a smooth ARC around the obstacle
     obstaclePhase = OB_DRIVE_RIGHT;
     if (passedDistance < OBSTACLE_PASS_DISTANCE) {
-      setMotorSpeed(baseSpeed + OBSTACLE_RIGHT_SPEED_HIGH, baseSpeed - OBSTACLE_RIGHT_SPEED_LOW);
-      Serial.println("Obstacle zichtbaar: agressief rechts om object te omzeilen.");
+      // Agressief rechts (boogmanoeuvre)
+      int leftMotor = baseSpeed + OBSTACLE_RIGHT_SPEED_HIGH;
+      int rightMotor = baseSpeed - OBSTACLE_RIGHT_SPEED_LOW;
+      setMotorSpeed(leftMotor, rightMotor);
+      Serial.println("[OBSTACLE] Agressief rechts om object te omzeilen (boog)");
     } else {
-      setMotorSpeed(baseSpeed + OBSTACLE_RIGHT_SPEED_BIAS, baseSpeed - OBSTACLE_RIGHT_SPEED_AFTER);
-      Serial.println("Obstacle zichtbaar: scherp rechts verder rond object.");
+      // Na het object: minder agressief rechts
+      int leftMotor = baseSpeed + OBSTACLE_RIGHT_SPEED_BIAS;
+      int rightMotor = baseSpeed - OBSTACLE_RIGHT_SPEED_AFTER;
+      setMotorSpeed(leftMotor, rightMotor);
+      Serial.println("[OBSTACLE] Scherp rechts verder rond object");
     }
   } else {
+    // Phase 2: Object is voorbij, nu zoeken naar lijn
     if (obstaclePhase == OB_DRIVE_RIGHT) {
       if (passedDistance < OBSTACLE_PASS_DISTANCE) {
-        setMotorSpeed(baseSpeed + OBSTACLE_RIGHT_SPEED_BIAS, baseSpeed - OBSTACLE_LEFT_SEARCH_SPEED);
-        Serial.println("Nog niet ver genoeg voorbij object, rechtdoor met rechtsbias.");
+        // Nog niet ver genoeg voorbij het object
+        int leftMotor = baseSpeed + OBSTACLE_RIGHT_SPEED_BIAS;
+        int rightMotor = baseSpeed - OBSTACLE_LEFT_SEARCH_SPEED;
+        setMotorSpeed(leftMotor, rightMotor);
+        Serial.println("[OBSTACLE] Nog niet voorbij: rechtdoor met rechtsbias");
       } else {
+        // Nu kunnen we naar lijn-zoeken fase gaan
         obstaclePhase = OB_SEARCH_LINE;
-        Serial.println("Object weg en genoeg voorbij: lijn terugzoeken.");
+        Serial.println("[OBSTACLE] Object weg en voorbij: Zoek-fase gestart");
       }
     } else {
+      // Phase 3: Search for the line (OB_SEARCH_LINE)
       if (lineVisible) {
         float lineError = currentSensors.linePosition;
-        int steer = constrain((int)(lineError * OBSTACLE_LINE_STEER_FACTOR), -OBSTACLE_LINE_STEER_LIMIT, OBSTACLE_LINE_STEER_LIMIT);
+        
+        // Smooth steering back to the line using line error
+        int steer = constrain((int)(lineError * OBSTACLE_LINE_STEER_FACTOR), 
+                              -OBSTACLE_LINE_STEER_LIMIT, OBSTACLE_LINE_STEER_LIMIT);
         int leftPWM = constrain(baseSpeed - 10 + steer, 0, MAX_SPEED);
         int rightPWM = constrain(baseSpeed - 10 - steer, 0, MAX_SPEED);
         setMotorSpeed(leftPWM, rightPWM);
-        Serial.println("Lijn gedetecteerd, stuur terug naar de lijn.");
+        Serial.printf("[OBSTACLE] Lijn gedetecteerd: stuur terug (error=%.1f)\n", lineError);
 
+        // Exit obstacle avoidance when line is stable and we've gone far enough
         if (abs(lineError) < 10.0 && passedDistance >= 30.0) {
-          Serial.println("Lijn teruggevonden, terug naar vorige modus.");
+          Serial.println("[OBSTACLE] Lijn stabiel: terugkeer naar vorige modus");
           currentState = previousState;
           obstaclePhase = OB_NONE;
           return;
         }
       } else {
-        setMotorSpeed(baseSpeed - 20, baseSpeed + 30);
-        Serial.println("Geen lijn, zoek langzaam naar links.");
+        // Line still not found: search by turning left gently
+        int leftMotor = baseSpeed - 20;
+        int rightMotor = baseSpeed + 30;
+        setMotorSpeed(leftMotor, rightMotor);
+        Serial.println("[OBSTACLE] Geen lijn: zoek langzaam naar links");
       }
     }
   }
 
+  // --- Save data during obstacle avoidance ---
   if (previousState == MAPPING) {
     float distSinceLastSave = abs(currentSensors.distanceDriven - lastSavedDistance);
     if (distSinceLastSave >= 5.0) {
@@ -217,14 +254,19 @@ void handleObstacleAvoidance() {
                 lineVisible ? currentSensors.linePosition : 0.0,
                 currentSensors.distance,
                 currentSensors.leftTicks,
-                currentSensors.rightTicks);
+                currentSensors.rightTicks,
+                BRANCH_NONE,
+                false,
+                false,
+                false,
+                0);
       lastSavedDistance = currentSensors.distanceDriven;
-      Serial.println("Obstacle punt opgeslagen in map.");
+      Serial.println("[OBSTACLE] Obstacle-punt opgeslagen in map");
     }
   } else if (previousState == SPEEDRUN) {
     logSpeedrunPoint(currentSensors.distanceDriven,
                      lineVisible ? currentSensors.linePosition : 0.0,
-                     6);
+                     6); // Type 6 = Obstacle
   }
 }
 
@@ -345,141 +387,9 @@ case COUNTDOWN:
     }
     break;
 
-case MAPPING: {
-    static unsigned long whiteTime = 0; 
-    static int lastSideSeen = 0; 
-    static unsigned long actionTimer = 0; 
-    static unsigned long lastPrint = 0;
-    static unsigned long finishDetectedTime = 0;
-
-    // --- 1. SENSOR DATA PRINTEN (Voor debugging) ---
-    if (millis() - lastPrint > 150) {
-        Serial.print("Sensoren: [");
-        for (int i = 7; i >= 0; i--) Serial.print((currentSensors.sensorMask & (1 << i)) ? "X" : "_");
-        int cleanDist = (currentSensors.distance > 0 && currentSensors.distance < 200) ? currentSensors.distance : 0;
-        Serial.printf("] | Dist: %3d cm | Driven: %5.1f cm\n", cleanDist, currentSensors.distanceDriven);
-        lastPrint = millis();
-    }
-
-    // --- 2. OBSTAKEL DETECTIE (WACHT-MODUS) ---
-    if (currentSensors.distance > 1 && currentSensors.distance < 15) {
-        stopMotors();
-        Serial.println("!!! OBSTAKEL GEZIEN: Robot wacht... !!!");
-        break; 
-    }
-
-    // --- 3. VERBETERDE FINISH DETECTIE (Debounce van 200ms) ---
-    if (currentSensors.sensorMask == 0xFF) {
-        if (finishDetectedTime == 0) finishDetectedTime = millis();
-        
-        if (millis() - finishDetectedTime > 200) { 
-            stopMotors();
-            Serial.println(">>> FINISH BEVESTIGD: Robot stopt. <<<");
-            break;
-        }
-        break; 
-    } else {
-        finishDetectedTime = 0; 
-    }
-
-    // --- 4. BOCHT & KRUISPUNT LOGICA (Met Gap Detectie & Rechtdoor prioriteit) ---
-    FinishState finishStatus = checkFinishStatus();
-    bool midLine = (currentSensors.sensorMask & 0b00011000); // Lijn in het midden
-    
-    // Sharp Turn Gap Detectie: Zoekt naar zwart op uiterste sensor EN wit ertussen
-    bool sharpLeftGap = (currentSensors.sensorMask & 0b11000000) && !(currentSensors.sensorMask & 0b00100000);
-    bool sharpRightGap = (currentSensors.sensorMask & 0b00000011) && !(currentSensors.sensorMask & 0b00000100);
-
-    if ((finishStatus == INTERSECTION_DETECTED || sharpLeftGap || sharpRightGap) && (millis() - actionTimer > 600)) {
-        
-        // Iets vooruit om as goed te zetten voor de draai
-        setMotorSpeed(BASE_SPEED_MAPPING, BASE_SPEED_MAPPING);
-        delay(45); 
-        
-        uint8_t branches = probeAvailableBranches();
-        uint8_t targetDir = chooseLeftHandBranch(branches);
-
-        // BESLISSING 1: Linksaf (Afslag of Scherpe Bocht)
-        if (targetDir == BRANCH_LEFT || sharpLeftGap) {
-            Serial.println(">>> ACTIE: Draai naar LINKS (Prioriteit) <<<");
-            setMotorSpeed(-BASE_SPEED_TURNS, BASE_SPEED_TURNS);
-            delay(250); 
-            unsigned long turnTimeout = millis();
-            while (millis() - turnTimeout < 2500) {
-                // readSensors(); // <--- JOUW SENSOR FUNCTIE HIER
-                if (currentSensors.sensorMask & 0b00011000) break;
-                delay(5);
-            }
-            actionTimer = millis();
-        } 
-        // BESLISSING 2: Rechtsaf (Alleen als er GEEN middenlijn is, volgens Linkerhandregel)
-        else if ((targetDir == BRANCH_RIGHT || sharpRightGap) && !midLine) {
-            Serial.println(">>> ACTIE: Draai naar RECHTS <<<");
-            setMotorSpeed(BASE_SPEED_TURNS, -BASE_SPEED_TURNS);
-            delay(250);
-            unsigned long turnTimeout = millis();
-            while (millis() - turnTimeout < 2500) {
-                // readSensors(); // <--- JOUW SENSOR FUNCTIE HIER
-                if (currentSensors.sensorMask & 0b00011000) break;
-                delay(5);
-            }
-            actionTimer = millis();
-        }
-        // BESLISSING 3: Rechtdoor (Als er een middenlijn is, negeren we rechts)
-        else {
-            Serial.println(">>> INFO: Rechtdoor aanhouden volgens Linkerhandregel <<<");
-            actionTimer = millis(); 
-        }
-
-        if (finishStatus == INTERSECTION_DETECTED) {
-            saveIntersectionNode(currentSensors.distanceDriven, targetDir, branches);
-        }
-        whiteTime = 0;
-        break;
-    }
-
-    // --- 5. LIJNVOLGEN OF DEAD-END ---
-    if (currentSensors.lineDetected) {
-        whiteTime = 0; 
-        calculatePID();
-    } else {
-        if (whiteTime == 0) whiteTime = millis();
-        
-        // Dead-end herstel (180 graden draai)
-        if (millis() - whiteTime > 600) { 
-            Serial.println(">>> DEAD-END: Draaien tot we weer een lijn zien <<<");
-            markLastNodeDeadEnd();
-            setMotorSpeed(-BASE_SPEED_TURNS, BASE_SPEED_TURNS); 
-            delay(500); 
-            unsigned long deadEndTimeout = millis();
-            while (millis() - deadEndTimeout < 3000) {
-                // readSensors(); // <--- JOUW SENSOR FUNCTIE HIER
-                if (currentSensors.sensorMask & 0b00011000) break;
-                delay(5);
-            }
-            whiteTime = 0;
-            actionTimer = millis();
-            break;
-        } else {
-            // Zoeken op basis van laatst geziene kant
-            if (lastSideSeen == -1) setMotorSpeed(-BASE_SPEED_TURNS, BASE_SPEED_TURNS);
-            else if (lastSideSeen == 1) setMotorSpeed(BASE_SPEED_TURNS, -BASE_SPEED_TURNS);
-            else setMotorSpeed(BASE_SPEED_MAPPING - 15, BASE_SPEED_MAPPING - 15);
-        }
-    }
-
-    // --- 6. GEHEUGEN UPDATE & DATA OPSLAAN ---
-    if (currentSensors.sensorMask & 0b11100000) lastSideSeen = -1;
-    else if (currentSensors.sensorMask & 0b00000111) lastSideSeen = 1;
-
-    float distSinceLastSave = abs(currentSensors.distanceDriven - lastSavedDistance);
-    if (currentSensors.lineDetected && distSinceLastSave >= NODE_SAVE_DISTANCE) {
-        savePoint(currentSensors.distanceDriven, currentSensors.linePosition, 
-                  currentSensors.distance, currentSensors.leftTicks, currentSensors.rightTicks);
-        lastSavedDistance = currentSensors.distanceDriven;
-    }
-}
-break;
+case MAPPING:
+    executeMappingState();
+    break;
 
 
 
@@ -488,12 +398,10 @@ break;
 
 
 
-  
-  
 case SPEEDRUN:
     if (obstacleConfirmed()) {
-      beginObstacleAvoidance(currentState);
-      break;
+        beginObstacleAvoidance(currentState);
+        break;
     }
 
     {
@@ -502,20 +410,20 @@ case SPEEDRUN:
             break;
         }
         if (finishStatus == FINISH_CONFIRMED) {
-            Serial.println("Finish bereikt tijdens speedrun! Stop.");
+            Serial.println("[SPEEDRUN] Finish bereikt! Stop.");
             currentState = IDLE;
             stopMotors();
             break;
         }
     }
 
-    calculateSpeedrun();
+    executeSpeedrunState();
 
-    // Automatische stop: als we voorbij de gemapte afstand zijn en de lijn echt kwijt raken
+    // Automatische stop: als we voorbij de gemapte afstand zijn
     if (mapIndex > 0) {
         float finalMapDistance = trackMap[mapIndex - 1].distance;
         if (currentSensors.distanceDriven > finalMapDistance + 20.0 && !currentSensors.lineDetected) {
-            Serial.println("Finish bereikt! Stop.");
+            Serial.println("[SPEEDRUN] Finish bereikt! Stop.");
             currentState = IDLE;
             stopMotors();
         }
@@ -528,26 +436,26 @@ case SPEEDRUN:
 
  case DATA_DUMP:
     stopMotors();
-    
-    // Bereken de tijden voor de dumps
-    unsigned long mappingTijd = (mappingElapsedTime > 0) ? mappingElapsedTime : (mappingStartTime > 0 ? millis() - mappingStartTime : 0);
-    unsigned long speedrunTijd = (speedrunElapsedTime > 0) ? speedrunElapsedTime : (speedrunModeStartTime > 0 ? millis() - speedrunModeStartTime : 0);
-    
-    // 1. Dump de originele kaart (Mapping)
-    dumpMap(mappingTijd); 
-    
-    delay(1000); // Korte pauze zodat de seriële buffer niet overloopt
-    
-    // 2. Dump de debug kaart (Speedrun)
-    // Deze is leeg als je nog geen speedrun hebt gedaan
-    dumpSpeedrunMap(speedrunTijd); 
-    
-    buttonPressCount = 0;
-    mappingStartTime = 0;
-    speedrunModeStartTime = 0;
-    mappingElapsedTime = 0;
-    speedrunElapsedTime = 0;
-    currentState = IDLE;
+    {
+        // Bereken de tijden voor de dumps
+        unsigned long mappingTijd = (mappingElapsedTime > 0) ? mappingElapsedTime : (mappingStartTime > 0 ? millis() - mappingStartTime : 0);
+        unsigned long speedrunTijd = (speedrunElapsedTime > 0) ? speedrunElapsedTime : (speedrunModeStartTime > 0 ? millis() - speedrunModeStartTime : 0);
+        
+        // 1. Dump de originele kaart (Mapping)
+        dumpMap(mappingTijd); 
+        delay(1000);
+        
+        // 2. Dump de debug kaart (Speedrun)
+        dumpSpeedrunMap(speedrunTijd); 
+        
+        // Reset all state
+        buttonPressCount = 0;
+        mappingStartTime = 0;
+        speedrunModeStartTime = 0;
+        mappingElapsedTime = 0;
+        speedrunElapsedTime = 0;
+        currentState = IDLE;
+    }
     break;
   }
 }
